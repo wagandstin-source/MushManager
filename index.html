@@ -643,28 +643,30 @@ function App() {
   // Fruiting room alerts — fully incubated blocks ready to load, timed to weather
   const fruitingAlerts = useMemo(()=>{
     const alerts = [];
+    const todayMult = getSeasonal(0, seasonal);
     tracker.filter(e=>e.type==="block" && !e.entryClass).forEach(entry=>{
       const sp = species.find(s=>s.id===(entry.speciesId||entry.sid));
       if(!sp) return;
       const daysInIncubation = -dateToDayOffset(entry.date);
-      const minIncubation = sp.blockWeeks * 7 * 0.65; // ~65% of normal = ready to consider
-      if(daysInIncubation < minIncubation) return; // not ready yet
-      // Find best weekend to fruit in next 3 weeks
+      const minIncubation = sp.blockWeeks * 7 * 0.65;
+      if(daysInIncubation < minIncubation) return;
       const today = new Date(); today.setHours(0,0,0,0);
       const fruitDays = sp.fruitDays;
-      let bestScore = 0, bestDate = null;
+      let bestScore = 0, bestDate = null, bestWeekOffset = 0;
       weatherScores.forEach(w=>{
         const d = new Date(w.date+'T12:00:00');
-        const daysAhead = Math.round((d-today)/(24*60*60*1000));
-        // This weekend score represents demand fruitDays before harvest
         const loadDate = new Date(d); loadDate.setDate(d.getDate()-fruitDays);
         const daysUntilLoad = Math.round((loadDate-today)/(24*60*60*1000));
         if(daysUntilLoad>=0 && daysUntilLoad<=21 && w.score > bestScore) {
           bestScore = w.score;
           bestDate = loadDate;
+          bestWeekOffset = Math.round(daysUntilLoad/7);
         }
       });
-      if(bestScore >= 0.65 && bestDate) {
+      // Only alert if weather is genuinely good — above seasonal baseline for that week
+      const seasonalMult = getSeasonal(bestWeekOffset, seasonal);
+      const seasonalBaseline = Math.min(0.85, Math.max(0.15, seasonalMult * 0.5));
+      if(bestScore >= 0.65 && bestScore > seasonalBaseline + 0.1 && bestDate) {
         const daysUntil = Math.round((bestDate-today)/(24*60*60*1000));
         const label = bestDate.toLocaleDateString("en-CA",{month:"short",day:"numeric"});
         alerts.push({
@@ -675,7 +677,7 @@ function App() {
       }
     });
     return alerts;
-  }, [tracker, species, weatherScores]);
+  }, [tracker, species, weatherScores, seasonal]);
 
   // ── Room occupancy calculations ──────────────────────────────────────────
 
