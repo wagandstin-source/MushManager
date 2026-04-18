@@ -1,8 +1,9 @@
 {
-  "name": "Mushroom Farm Planner",
-  "short_name": "Farm Planner",
-  "description": "Cambridge ON mushroom farm production planner",
-  "start_url": "/",
+  "name": "MushManager",
+  "short_name": "MushManager",
+  "description": "Mushroom farm production planner",
+  "start_url": "/MushManager/index.html",
+  "scope": "/MushManager/",
   "display": "standalone",
   "background_color": "#0c160c",
   "theme_color": "#0c160c",
