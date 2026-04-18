@@ -764,11 +764,13 @@ function App() {
     clients.forEach(cl=>{rawLbs+=parseFloat(orders[cl.id]?.[sp.id]??0)||0;});
     liveItems.forEach(item=>{rawLbs+=parseFloat(item.orders?.[sp.id]??0)||0;});
 
-    // Baseline = normalized average of last 8 weeks per client, weather-nudged
+    // Baseline = normalized average of last 8 weeks per client, weather-nudged at harvest week
     let baselineLbs=0;
     clients.forEach(cl=>{
       const base = getBaselineLbs(cl.id, sp.id);
-      const nudge = getWeatherNudge(cl, 0);
+      // Nudge at block harvest week — when this week's inoculations will actually produce
+      const blockHarvestOffset = Math.round((getBlockIncubDays(sp) + sp.fruitDays) / 7);
+      const nudge = getWeatherNudge(cl, blockHarvestOffset);
       baselineLbs += base * nudge;
     });
     liveItems.forEach(item=>{baselineLbs+=parseFloat(item.orders?.[sp.id]??0)||0;});
