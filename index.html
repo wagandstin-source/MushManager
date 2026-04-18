@@ -38,7 +38,6 @@
 
   const APP_PASSWORD = 'Wag&Stin';
   const AUTH_KEY = 'mfp_authenticated';
-
   function PasswordScreen({ onAuth }) {
     const [pw, setPw] = React.useState('');
     const [show, setShow] = React.useState(false);
@@ -76,20 +75,21 @@
 
 
 const SPAWN_BAG_BLOCKS = 12;
+function getSpawnBagBlocks(sp){return sp?.spawnBagBlocks||SPAWN_BAG_BLOCKS;}
 const BANK_WEEKS = 3;
 const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
 const DEFAULT_SPECIES = [
-  { id:1, name:"Black",  spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#a0a0b0", exactFruit:false, wholesale:12, retail:18 },
-  { id:2, name:"Blue",   spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#7ec8a0", exactFruit:false, wholesale:12, retail:18 },
-  { id:3, name:"Pink",   spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:1.5, color:"#e07b8a", exactFruit:true,  wholesale:14, retail:20 },
-  { id:4, name:"B King", spawnWeeks:8,  spawnDays:56, blockIncubDays:21, fruitDays:21, blockWeeks:6, blockDivisor:2,   color:"#e8a87c", exactFruit:false, wholesale:14, retail:22 },
-  { id:5, name:"King",   spawnWeeks:8,  spawnDays:56, blockIncubDays:21, fruitDays:21, blockWeeks:6, blockDivisor:2,   color:"#f4d06f", exactFruit:false, wholesale:14, retail:22 },
-  { id:6, name:"Pearl",  spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#d4e8c2", exactFruit:false, wholesale:12, retail:18 },
-  { id:7, name:"Lion",   spawnWeeks:7,  spawnDays:49, blockIncubDays:14, fruitDays:21, blockWeeks:5, blockDivisor:2,   color:"#a78bda", exactFruit:false, wholesale:16, retail:24 },
-  { id:8, name:"Coral",  spawnWeeks:7,  spawnDays:49, blockIncubDays:14, fruitDays:21, blockWeeks:5, blockDivisor:2,   color:"#6bb8d4", exactFruit:false, wholesale:14, retail:20 },
-  { id:9, name:"Chest",  spawnWeeks:11, spawnDays:77, blockIncubDays:42, fruitDays:21, blockWeeks:9, blockDivisor:2,   color:"#c8a060", exactFruit:false, wholesale:18, retail:28 },
+  { id:1, name:"Black",  spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#a0a0b0", exactFruit:false, spawnBagBlocks:12, wholesale:12, retail:18 },
+  { id:2, name:"Blue",   spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#7ec8a0", exactFruit:false, spawnBagBlocks:12, wholesale:12, retail:18 },
+  { id:3, name:"Pink",   spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:1.5, color:"#e07b8a", exactFruit:true,  spawnBagBlocks:12, wholesale:14, retail:20 },
+  { id:4, name:"B King", spawnWeeks:8,  spawnDays:56, blockIncubDays:21, fruitDays:21, blockWeeks:6, blockDivisor:2,   color:"#e8a87c", exactFruit:false, spawnBagBlocks:12, wholesale:14, retail:22 },
+  { id:5, name:"King",   spawnWeeks:8,  spawnDays:56, blockIncubDays:21, fruitDays:21, blockWeeks:6, blockDivisor:2,   color:"#f4d06f", exactFruit:false, spawnBagBlocks:12, wholesale:14, retail:22 },
+  { id:6, name:"Pearl",  spawnWeeks:6,  spawnDays:42, blockIncubDays:17, fruitDays:11, blockWeeks:4, blockDivisor:2,   color:"#d4e8c2", exactFruit:false, spawnBagBlocks:12, wholesale:12, retail:18 },
+  { id:7, name:"Lion",   spawnWeeks:7,  spawnDays:49, blockIncubDays:14, fruitDays:21, blockWeeks:5, blockDivisor:2,   color:"#a78bda", exactFruit:false, spawnBagBlocks:12, wholesale:16, retail:24 },
+  { id:8, name:"Coral",  spawnWeeks:7,  spawnDays:49, blockIncubDays:14, fruitDays:21, blockWeeks:5, blockDivisor:2,   color:"#6bb8d4", exactFruit:false, spawnBagBlocks:12, wholesale:14, retail:20 },
+  { id:9, name:"Chest",  spawnWeeks:11, spawnDays:77, blockIncubDays:42, fruitDays:21, blockWeeks:9, blockDivisor:2,   color:"#c8a060", exactFruit:false, spawnBagBlocks:12, wholesale:18, retail:28 },
 ];
 
 // Display days as "Xd" or "X wks"
@@ -319,7 +319,7 @@ function App() {
   function setSchedule(v){const val=typeof v==="function"?v(schedule):v;setScheduleRaw(val);save("schedule",val);}
   const [activeTab, setActiveTab] = useState("today");
   const [newEntry,  setNewEntry]  = useState({ type:"block", speciesId:"", date:todayStr(), qty:"", note:"" });
-  const [ns, setNs] = useState({ name:"", spawnWeeks:6, spawnDays:42, blockWeeks:4, blockIncubDays:17, fruitDays:11, blockDivisor:2, color:"#7ec8a0", exactFruit:false });
+  const [ns, setNs] = useState({ name:"", spawnWeeks:6, spawnDays:42, blockWeeks:4, blockIncubDays:17, fruitDays:11, blockDivisor:2, spawnBagBlocks:12, color:"#7ec8a0", exactFruit:false });
   const [resetSnapshot, setResetSnapshot] = useState(null); // for undo reset
   const [retakeInv, setRetakeInv] = useState({show:false, type:"block", selected:{}});
   const [expandedTaskSpecies, setExpandedTaskSpecies] = useState({});
@@ -427,7 +427,7 @@ function App() {
     let lbs=0;
     clients.forEach(cl=>{lbs+=parseFloat(orders[cl.id]?.[sp.id]??0)||0;});
     liveItems.forEach(item=>{lbs+=parseFloat(item.orders?.[sp.id]??0)||0;});
-    const blocks1=r2(lbs/sp.blockDivisor),spawn1=r2(blocks1/SPAWN_BAG_BLOCKS);
+    const blocks1=r2(lbs/sp.blockDivisor),spawn1=r2(blocks1/getSpawnBagBlocks(sp));
     return{...sp,lbs,blocks1,blocks2:r2(blocks1*2),blocks3:r2(blocks1*3),spawn1,spawn2:r2(spawn1*2),spawn3:r2(spawn1*3)};
   }),[orders,species,clients,liveItems]);
 
@@ -812,9 +812,9 @@ function App() {
     const fruitLbs  = totalAt(sp.fruitDays/7);
 
     const blocks1=r2(blockLbs/sp.blockDivisor),blocks2=r2(blockLbs2/sp.blockDivisor),blocks3=r2(blockLbs3/sp.blockDivisor);
-    const spawnBags1=r2((spawnLbs/sp.blockDivisor)/SPAWN_BAG_BLOCKS);
-    const spawnBags2=r2((spawnLbs2/sp.blockDivisor)/SPAWN_BAG_BLOCKS);
-    const spawnBags3=r2((spawnLbs3/sp.blockDivisor)/SPAWN_BAG_BLOCKS);
+    const spawnBags1=r2((spawnLbs/sp.blockDivisor)/getSpawnBagBlocks(sp));
+    const spawnBags2=r2((spawnLbs2/sp.blockDivisor)/getSpawnBagBlocks(sp));
+    const spawnBags3=r2((spawnLbs3/sp.blockDivisor)/getSpawnBagBlocks(sp));
     const fruitBlocks=r2(fruitLbs/sp.blockDivisor);
     const hasUpcoming=spawnLbs>projRegular(sp.spawnWeeks)||blockLbs>projRegular(sp.blockWeeks);
 
@@ -974,7 +974,7 @@ function App() {
         const totalLbs=r2(projLbs+extraLbs);
         if(totalLbs===0&&!trackerCoverage[sp.id]?.[w])return;
         const neededBlocks=r2(totalLbs/sp.blockDivisor);
-        const neededSpawn=r2((totalLbs/sp.blockDivisor)/SPAWN_BAG_BLOCKS);
+        const neededSpawn=r2((totalLbs/sp.blockDivisor)/getSpawnBagBlocks(sp));
         const haveBlocks=r2(trackerCoverage[sp.id]?.[w]?.blocks||0);
         const haveSpawn=r2(trackerCoverage[sp.id]?.[w]?.spawn||0);
         weekData.species[sp.id]={
@@ -996,7 +996,7 @@ function App() {
       clients.forEach(cl => { todayLbs += parseFloat(orders[cl.id]?.[sp.id]??0)||0; });
       liveItems.forEach(item => { todayLbs += parseFloat(item.orders?.[sp.id]??0)||0; });
       const weeklyBlocks = todayLbs > 0 ? r2(todayLbs / sp.blockDivisor) : 0;
-      const weeklySpawn  = r2(weeklyBlocks / SPAWN_BAG_BLOCKS);
+      const weeklySpawn  = r2(weeklyBlocks / getSpawnBagBlocks(sp));
 
       // Split inventory into ready vs incubating
       let inHandBlocks = 0, inHandSpawn = 0;
@@ -1066,7 +1066,7 @@ function App() {
         .sort((a,b) => a.blockWeeks - b.blockWeeks)
         .map(sub => {
           const blocksNeeded = r2(lbsShort / sub.blockDivisor);
-          const spawnNeeded  = r2(blocksNeeded / SPAWN_BAG_BLOCKS);
+          const spawnNeeded  = r2(blocksNeeded / getSpawnBagBlocks(sub));
           const bankData = simplBank[sub.id];
           const alreadyHave = bankData?.inHandBlocks || 0;
           return { sub, blocksNeeded, spawnNeeded, alreadyHave, canCover: alreadyHave >= blocksNeeded };
@@ -1155,7 +1155,7 @@ function App() {
   const tabs=["today","sheet","thisweek","graph","bank","tracker","history","seasonal","setup","suppliers"];
   const tabLabels={today:"📊 Dashboard",sheet:"📊 This Week",thisweek:"🌱 Tasks",graph:"📈 Forecast",bank:"🏦 Bank",tracker:"🗓️ Tracker",history:"📋 History",seasonal:"📅 Seasonal",setup:"⚙️ Setup",suppliers:"🤝 Suppliers"};
 
-  const addSpecies=()=>{if(!ns.name.trim())return;setSpecies(p=>[...p,{id:Date.now(),...ns,name:ns.name.trim()}]);setNs({name:"",spawnWeeks:6,spawnDays:42,blockWeeks:4,blockIncubDays:17,fruitDays:11,blockDivisor:2,color:"#7ec8a0",exactFruit:false});};
+  const addSpecies=()=>{if(!ns.name.trim())return;setSpecies(p=>[...p,{id:Date.now(),...ns,name:ns.name.trim()}]);setNs({name:"",spawnWeeks:6,spawnDays:42,blockWeeks:4,blockIncubDays:17,fruitDays:11,blockDivisor:2,spawnBagBlocks:12,color:"#7ec8a0",exactFruit:false});};
   const addClient = (name, startDate, clientOrders, clientType, lastWeekOrds) => {
     if (!name.trim()) return;
     const newId = Date.now();
@@ -1326,7 +1326,7 @@ function App() {
       if (lbs === 0) return;
 
       const blocksNeeded = r2(lbs / sp.blockDivisor);
-      const spawnNeeded  = r2(blocksNeeded / SPAWN_BAG_BLOCKS);
+      const spawnNeeded  = r2(blocksNeeded / getSpawnBagBlocks(sp));
       const bankData     = simplBank[sp.id];
       const surplusBlocks = bankData?.surplusBlocks || 0;
       const surplusSpawn  = bankData?.surplusSpawn  || 0;
@@ -3599,12 +3599,13 @@ function App() {
                       ["Spawn incub (d)","spawnDays",1,120,1],
                       ["Block incub (d)","blockIncubDays",1,60,1],
                       ["Fruiting (d)","fruitDays",1,30,1],
-                      ["lbs/block","blockDivisor",.5,10,.25]
+                      ["lbs/block","blockDivisor",.5,10,.25],
+                      ["Blks/spawn bag","spawnBagBlocks",1,24,1]
                     ].map(([label,key,min,max,step])=>(
                       <div key={key}>
                         <label style={{fontSize:9,color:"#5a8a5a",display:"block",marginBottom:1}}>{label}</label>
                         <input type="number" min={min} max={max} step={step}
-                          value={key==="blockIncubDays"?(sp.blockIncubDays??getBlockIncubDays(sp)):sp[key]}
+                          value={key==="blockIncubDays"?(sp.blockIncubDays??getBlockIncubDays(sp)):key==="spawnBagBlocks"?(sp.spawnBagBlocks??12):sp[key]}
                           onChange={e=>{
                             const val=parseFloat(e.target.value)||min;
                             // Keep blockWeeks in sync for backward compat
@@ -3633,7 +3634,7 @@ function App() {
                 <h4 style={{margin:"0 0 8px",color:"#a8c890",fontSize:12}}>Add Species</h4>
                 <input value={ns.name} onChange={e=>setNs(p=>({...p,name:e.target.value}))} placeholder="e.g. Shiitake" style={{...S.inp,marginBottom:8}}/>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr auto auto",gap:5,marginBottom:8}}>
-                  {[["Spawn incub (d)","spawnDays",1,120,1],["Block incub (d)","blockIncubDays",1,60,1],["Fruiting (d)","fruitDays",1,30,1],["lbs/blk","blockDivisor",.5,10,.25]].map(([label,key,min,max,step])=>(
+                  {[["Spawn incub (d)","spawnDays",1,120,1],["Block incub (d)","blockIncubDays",1,60,1],["Fruiting (d)","fruitDays",1,30,1],["lbs/blk","blockDivisor",.5,10,.25],["Blks/spawn bag","spawnBagBlocks",1,24,1]].map(([label,key,min,max,step])=>(
                     <div key={key}><label style={{fontSize:9,color:"#5a8a5a",display:"block",marginBottom:1}}>{label}</label><input type="number" min={min} max={max} step={step} value={ns[key]} onChange={e=>{
                       const val=parseFloat(e.target.value)||min;
                       setNs(p=>{
