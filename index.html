@@ -918,22 +918,16 @@ function App() {
     tracker.forEach(entry => {
       const sp = species.find(s => s.id === (entry.speciesId||entry.sid));
       if(!sp) return;
-      let todayLbs = 0;
-      clients.forEach(cl => { todayLbs += parseFloat(orders[cl.id]?.[sp.id]??0)||0; });
-      liveItems.forEach(item => { todayLbs += parseFloat(item.orders?.[sp.id]??0)||0; });
-      if(todayLbs === 0) return;
-      // Only block entries count toward block coverage
       if(entry.type==="block") cov[sp.id].block = r2(cov[sp.id].block + entry.qty);
       else if(entry.type==="spawn") cov[sp.id].spawn = r2(cov[sp.id].spawn + entry.qty);
     });
     return cov;
-  },[tracker,species,orders,clients,liveItems]);
+  },[tracker,species]);
 
-  // Adjust production numbers by bank balance (surplus reduces need, deficit increases need)
-  function applyOffset(val1, val2, val3, bankBalance) {
-    const r1 = Math.max(0, r2(val1 - bankBalance));
-    const r2v = Math.max(0, r2(val2 - bankBalance));
-    const r3 = Math.max(0, r2(val3 - bankBalance));
+  function applyOffset(val1, val2, val3, coverage) {
+    const r1 = Math.max(0, r2(val1 - coverage));
+    const r2v = Math.max(0, r2(val2 - coverage));
+    const r3 = Math.max(0, r2(val3 - coverage));
     return [r1, r2v, r3];
   }
 
@@ -967,21 +961,9 @@ function App() {
       .filter(sp=>sp.totalToday>0||sp.todayLbs>0)
       .map(sp=>{
         const cov = coverageWeeks[sp.id]||{spawn:0,block:0};
-        // Calculate week-0 bank balance inline (surplus=positive, deficit=negative)
-        const todayLbs0 = (() => {
-          let lbs = 0;
-          clients.forEach(cl => { lbs += parseFloat(orders[cl.id]?.[sp.id]??0)||0; });
-          liveItems.forEach(item => { lbs += parseFloat(item.orders?.[sp.id]??0)||0; });
-          return lbs;
-        })();
-        const neededBlocks0 = todayLbs0 > 0 ? r2(todayLbs0 / sp.blockDivisor) : 0;
-        const neededSpawn0 = neededBlocks0 > 0 ? r2(neededBlocks0 / getSpawnBagBlocks(sp)) : 0;
-        const haveBlocks0 = r2(cov.block);
-        const haveSpawn0 = r2(cov.spawn);
-        const blockBankBalance = r2(haveBlocks0 - neededBlocks0);
-        const spawnBankBalance = r2(haveSpawn0 - neededSpawn0);
-        const [sb1,sb2,sb3] = applyOffset(sp.spawnBags1,sp.spawnBags2,sp.spawnBags3, spawnBankBalance);
-        const [bk1,bk2,bk3] = applyOffset(sp.blocks1,sp.blocks2,sp.blocks3, blockBankBalance);
+        // Tasks = checklist: subtract what's already logged from what needs to be done
+        const [sb1,sb2,sb3] = applyOffset(sp.spawnBags1,sp.spawnBags2,sp.spawnBags3, cov.spawn);
+        const [bk1,bk2,bk3] = applyOffset(sp.blocks1,sp.blocks2,sp.blocks3, cov.block);
         const fruitLoadedAmt = getFruitLoaded(sp.id);
         // Adjust fruiting room loading by substitutions only — don't subtract already loaded
         // The target always reflects full weekly demand; fruitLoadedAmt shown as progress
@@ -1455,19 +1437,17 @@ function App() {
         qty: quickLog.value,
         note: 'Quick log',
       };
-      setTracker(p => [...p, newEntry]);
-      // If logging blocks, also log spawn bag consumption as a loss-style deduction
-      if(quickLog.type === 'block' && quickLog.spawnBagsUsed > 0) {
-        setTracker(p => [...p, {
-          id: Date.now() + 1,
-          type: 'spawn',
-          speciesId: quickLog.speciesId,
-          date: quickLog.date,
-          qty: -quickLog.spawnBagsUsed, // negative = consumed
-          note: `Used for ${quickLog.value} blocks`,
-          entryClass: 'consumed',
-        }]);
-      }
+      // Combine block entry and spawn deduction into single setTracker call
+      const spawnEntry = (quickLog.type === 'block' && quickLog.spawnBagsUsed > 0) ? {
+        id: Date.now() + 1,
+        type: 'spawn',
+        speciesId: quickLog.speciesId,
+        date: quickLog.date,
+        qty: -quickLog.spawnBagsUsed,
+        note: `Used for ${quickLog.value} blocks`,
+        entryClass: 'consumed',
+      } : null;
+      setTracker(p => spawnEntry ? [...p, newEntry, spawnEntry] : [...p, newEntry]);
     }
     setQuickLog(null);
   }
@@ -2084,6 +2064,22 @@ function App() {
                 ))}
               </div>
             )}
+
+            {/* ── SUBSTITUTION REMINDER ────────────────────────────── */}
+            {(()=>{
+              const today = new Date(); today.setHours(0,0,0,0);
+              const dow = today.getDay();
+              const weekStartDay = schedule.weekStartDay ?? 1;
+              const daysUntilStart = (weekStartDay - dow + 7) % 7;
+              // Show reminder the day before week start
+              if(daysUntilStart !== 1) return null;
+              return(
+                <div style={{background:"#1a1a2a",border:"2px solid #a78bda",borderRadius:10,padding:"12px 16px",marginBottom:14}}>
+                  <p style={{margin:"0 0 4px",fontSize:13,color:"#a78bda",fontWeight:"bold"}}>🔄 Week starts tomorrow — review substitutions</p>
+                  <p style={{fontSize:11,color:"#5a5a8a",margin:0}}>Check Tracker → Block Substitutions before the new week begins. Clear any that are no longer needed.</p>
+                </div>
+              );
+            })()}
 
             {/* ── SUBMISSION BANNER ────────────────────────────────── */}
             {needsSubmission&&(
