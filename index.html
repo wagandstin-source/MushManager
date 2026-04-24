@@ -772,11 +772,13 @@ function App() {
     let baselineLbs=0;
     clients.forEach(cl=>{
       const base = getBaselineLbs(cl.id, sp.id);
-      // Nudge at block harvest week — when this week's inoculations will actually produce
       const blockHarvestOffset = Math.round((getBlockIncubDays(sp) + sp.fruitDays) / 7);
       const nudge = getWeatherNudge(cl, blockHarvestOffset);
       baselineLbs += base * nudge;
     });
+
+    // Only add upcoming items to baseline if they start soon enough for regular orders
+    // Items are already filtered to "live" (start within 5 days) by liveItems
     liveItems.forEach(item=>{baselineLbs+=parseFloat(item.orders?.[sp.id]??0)||0;});
 
     const todayLbs = baselineLbs > 0 ? baselineLbs : rawLbs;
@@ -785,39 +787,104 @@ function App() {
     const todayMult=getSeasonal(0,seasonal);
     const projRegular=(wo)=>todayLbs>0?r2(todayLbs*(getSeasonal(wo,seasonal)/todayMult)):0;
     const extraAt=(wo)=>extraDemand[wo]?.[sp.id]||0;
-    const totalAt=(wo)=>r2(projRegular(wo)+extraAt(wo));
 
-    // Spawn lead: spawnWeeks from today → delivery target
-    const spawnDeliveryDays = sp.spawnWeeks * 7;
+    // Per-step upcoming item demand — only include if market starts in time for that step
+    const spawnPipelineDays = sp.spawnDays + getBlockIncubDays(sp) + sp.fruitDays;
+    const blockPipelineDays = getBlockIncubDays(sp) + sp.fruitDays;
+    const fruitPipelineDays = sp.fruitDays;
+
+    // Per-step upcoming demand with proper start/end date rules
+    // For ongoing clients/markets: include when start is within pipeline, exclude when end is too close
+    // For events: one-time demand only in the specific week they fall
+    const upcomingLbsForStep = (pipelineDays, weekOffset=0) => {
+      let lbs = 0;
+      sortedUpcoming.forEach(item=>{
+        const itemLbs = parseFloat(item.orders?.[sp.id]??0)||0;
+        if(!itemLbs) return;
+        const daysUntilStart = dateToDayOffset(item.startDate);
+        const daysUntilEnd = item.endDate ? dateToDayOffset(item.endDate) : Infinity;
+
+        if(item.type==='event') {
+          // One-time event: only count in the week it falls
+          const eventWeekOffset = Math.round(daysUntilStart / 7);
+          if(Math.abs(eventWeekOffset - weekOffset) <= 0.5) lbs += itemLbs;
+        } else {
+          // Ongoing client/market:
+          // Start rule: only include if start date is within this pipeline's lead time
+          const startOk = daysUntilStart <= pipelineDays;
+          // End rule: only include if enough time remains to complete this pipeline step
+          const endOk = daysUntilEnd >= pipelineDays;
+          if(startOk && endOk) lbs += itemLbs;
+        }
+      });
+      return lbs;
+    };
+
+    // Regular client lbs — use history baseline (todayLbs) with seasonal scaling
+    // Weather nudge applied per client at the given week offset
+    const regularMult = getSeasonal(0,seasonal);
+
+    // Per-client weather-nudged projection at a given week offset
+    const projRegularOnly=(wo)=>{
+      let lbs = 0;
+      clients.forEach(cl=>{
+        const base = getBaselineLbs(cl.id, sp.id);
+        if(!base) return;
+        const seasonAdj = r2(base * (getSeasonal(wo,seasonal)/regularMult));
+        const nudge = getWeatherNudge(cl, Math.round(wo));
+        lbs += r2(seasonAdj * nudge);
+      });
+      return r2(lbs);
+    };
+
+    const totalAt=(wo, upcomingLbs=0)=>r2(projRegularOnly(wo) + r2(upcomingLbs*(getSeasonal(wo,seasonal)/regularMult)) + extraAt(wo));
+
+    const spawnUpLbs = upcomingLbsForStep(spawnPipelineDays, sp.spawnWeeks);
+    const blockUpLbs = upcomingLbsForStep(blockPipelineDays, sp.blockWeeks);
+    const fruitUpLbs = upcomingLbsForStep(fruitPipelineDays, Math.round(sp.fruitDays/7));
+
+    // Spawn lead: look at demand at HARVEST time (full pipeline = spawn + block + fruit)
+    const spawnDeliveryDays = sp.spawnDays;
+    const spawnHarvestWeeks = Math.round(spawnPipelineDays / 7);
     const spawnScheduled = prevScheduledDay(spawnDeliveryDays, schedule.spawnDay);
-    const spawnLbs  = totalAt(sp.spawnWeeks);
-    const spawnLbs2 = r2(spawnLbs+totalAt(sp.spawnWeeks+1));
-    const spawnLbs3 = r2(spawnLbs2+totalAt(sp.spawnWeeks+2));
+    const spawnLbs  = totalAt(spawnHarvestWeeks, spawnUpLbs);
+    const spawnLbs2 = r2(spawnLbs+totalAt(spawnHarvestWeeks+1, spawnUpLbs));
+    const spawnLbs3 = r2(spawnLbs2+totalAt(spawnHarvestWeeks+2, spawnUpLbs));
 
-    // Block lead: blockWeeks from today → delivery target
-    const blockDeliveryDays = sp.blockWeeks * 7;
+    // Block lead: look at demand at HARVEST time (block + fruit pipeline)
+    const blockDeliveryDays = getBlockIncubDays(sp);
+    const blockHarvestWeeks = Math.round(blockPipelineDays / 7);
     const blockScheduled = prevScheduledDay(blockDeliveryDays, schedule.blockDay);
-    const blockLbs  = totalAt(sp.blockWeeks);
-    const blockLbs2 = r2(blockLbs+totalAt(sp.blockWeeks+1));
-    const blockLbs3 = r2(blockLbs2+totalAt(sp.blockWeeks+2));
+    const blockLbs  = totalAt(blockHarvestWeeks, blockUpLbs);
+    const blockLbs2 = r2(blockLbs+totalAt(blockHarvestWeeks+1, blockUpLbs));
+    const blockLbs3 = r2(blockLbs2+totalAt(blockHarvestWeeks+2, blockUpLbs));
 
     // Fruit load date
-    const fruitTargetDays = sp.fruitDays; // days until harvest
-    const harvestDayOffset = 0; // harvest "this week" target = today's regular orders deliver now
-    // fruit: need to load fruitDays before harvest
-    // For regular orders harvest is ongoing — we use the near-term window
-    const fruitLoadTarget = -sp.fruitDays + sp.fruitDays; // = 0 basically for ongoing
-    // Actually: fruit load needs to happen fruitDays before harvest
-    // For ongoing orders, target is "product ready ASAP" = load fruitDays before now = already should be loaded
-    // We show as: load date = today - fruitDays rounded to schedule
-    const fruitDeadlineDayOffset = sp.fruitDays; // days until the fruit needs to be harvested from now
+    const fruitTargetDays = sp.fruitDays;
+    const harvestDayOffset = 0;
+    const fruitLoadTarget = -sp.fruitDays + sp.fruitDays;
+    const fruitDeadlineDayOffset = sp.fruitDays;
     let fruitScheduled;
     if(sp.exactFruit){
       fruitScheduled = exactFruitLoadDate(fruitDeadlineDayOffset, sp.fruitDays);
     } else {
       fruitScheduled = prevFruitDay(fruitDeadlineDayOffset, schedule.fruitDays);
     }
-    const fruitLbs  = totalAt(sp.fruitDays/7);
+    // Fruit loading uses harvest week weather — when will these blocks actually be sold
+    // For 11-day species harvest week = ~1.5 weeks, for 21-day = ~3 weeks
+    // But weather forecast only covers 16 days so cap at week 2
+    const fruitWeatherOffset = Math.min(2, Math.round(sp.fruitDays/7));
+    const fruitLbs = (()=>{
+      let lbs = 0;
+      clients.forEach(cl=>{
+        const base = getBaselineLbs(cl.id, sp.id);
+        if(!base) return;
+        const seasonAdj = r2(base * (getSeasonal(fruitWeatherOffset,seasonal)/regularMult));
+        const nudge = getWeatherNudge(cl, fruitWeatherOffset);
+        lbs += r2(seasonAdj * nudge);
+      });
+      return r2(lbs + r2(fruitUpLbs*(getSeasonal(fruitWeatherOffset,seasonal)/regularMult)) + extraAt(fruitWeatherOffset));
+    })();
 
     const blocks1=r2(blockLbs/sp.blockDivisor),blocks2=r2(blockLbs2/sp.blockDivisor),blocks3=r2(blockLbs3/sp.blockDivisor);
     const spawnBags1=r2((spawnLbs/sp.blockDivisor)/getSpawnBagBlocks(sp));
@@ -840,7 +907,7 @@ function App() {
       fruitLbs,fruitBlocks,fruitScheduled,fruitHarvestLabel,
       weeklyBlocks:blocks1,weeklySpawnBags:spawnBags1,
     };
-  }),[orders,species,clients,seasonal,extraDemand,liveItems,schedule]);
+  }),[orders,species,clients,seasonal,extraDemand,liveItems,schedule,sortedUpcoming]);
 
   const coverageWeeks = useMemo(()=>{
     const cov = {};
@@ -908,11 +975,12 @@ function App() {
         const [sb1,sb2,sb3] = applyOffset(sp.spawnBags1,sp.spawnBags2,sp.spawnBags3,cov.spawn);
         const [bk1,bk2,bk3] = applyOffset(sp.blocks1,sp.blocks2,sp.blocks3,cov.block);
         const fruitLoadedAmt = getFruitLoaded(sp.id);
-        // Adjust fruiting room loading by substitutions
+        // Adjust fruiting room loading by substitutions only — don't subtract already loaded
+        // The target always reflects full weekly demand; fruitLoadedAmt shown as progress
         const subIn = fruitSubIn[sp.id]||0;
         const subOut = fruitSubOut[sp.id]||0;
-        const baseRemain = r2(Math.max(0,(sp.fruitBlocks||0)-fruitLoadedAmt));
-        const fruitRemain = r2(Math.max(0, baseRemain - subOut + subIn));
+        const fruitTarget = r2(Math.max(0,(sp.fruitBlocks||0)));
+        const fruitRemain = r2(Math.max(0, fruitTarget - subOut + subIn));
         const hasFruitSub = subIn > 0 || subOut > 0;
         return{...sp,
           spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
@@ -3727,7 +3795,9 @@ function App() {
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"center"}}>
                       <button onClick={()=>{
-                        setWeatherData(null);
+                        // Reset fetchedAt so cache is considered expired, triggering fresh fetch
+                        // Don't null out weatherData so dashboard keeps showing old data during fetch
+                        if(weatherData) setWeatherData({...weatherData, fetchedAt: 0});
                         setClientWeatherCache({});
                         setTimeout(()=>fetchWeather(), 100);
                         setWeatherRefreshed(true);
