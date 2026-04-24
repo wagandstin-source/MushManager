@@ -918,35 +918,22 @@ function App() {
     tracker.forEach(entry => {
       const sp = species.find(s => s.id === (entry.speciesId||entry.sid));
       if(!sp) return;
-      const entryDayOffset = dateToDayOffset(entry.date);
       let todayLbs = 0;
       clients.forEach(cl => { todayLbs += parseFloat(orders[cl.id]?.[sp.id]??0)||0; });
       liveItems.forEach(item => { todayLbs += parseFloat(item.orders?.[sp.id]??0)||0; });
       if(todayLbs === 0) return;
-      // Count all inventory toward coverage — nothing auto-expires
+      // Only block entries count toward block coverage
       if(entry.type==="block") cov[sp.id].block = r2(cov[sp.id].block + entry.qty);
-      else cov[sp.id].spawn = r2(cov[sp.id].spawn + entry.qty);
-    });
-    // Apply substitutions — move block coverage between species
-    substitutions.forEach(sub => {
-      cov[sub.fromSpeciesId] = cov[sub.fromSpeciesId] || { spawn:0, block:0 };
-      cov[sub.toSpeciesId]   = cov[sub.toSpeciesId]   || { spawn:0, block:0 };
-      // Remove from source species coverage
-      cov[sub.fromSpeciesId].block = r2(cov[sub.fromSpeciesId].block - sub.qty);
-      // Add to destination species coverage
-      cov[sub.toSpeciesId].block   = r2(cov[sub.toSpeciesId].block   + sub.qty);
+      else if(entry.type==="spawn") cov[sp.id].spawn = r2(cov[sp.id].spawn + entry.qty);
     });
     return cov;
-  },[tracker,species,orders,clients,liveItems,substitutions]);
+  },[tracker,species,orders,clients,liveItems]);
 
-  // Subtract coverage from production numbers
-  // coverage = total blocks/bags already made that still cover future weeks
-  function applyOffset(val1, val2, val3, coverage) {
-    // val1=1wk, val2=2wk cumulative, val3=3wk cumulative
-    // coverage is in blocks/bags already made
-    const r1 = Math.max(0, r2(val1 - coverage));
-    const r2v = Math.max(0, r2(val2 - coverage));
-    const r3 = Math.max(0, r2(val3 - coverage));
+  // Adjust production numbers by bank balance (surplus reduces need, deficit increases need)
+  function applyOffset(val1, val2, val3, bankBalance) {
+    const r1 = Math.max(0, r2(val1 - bankBalance));
+    const r2v = Math.max(0, r2(val2 - bankBalance));
+    const r3 = Math.max(0, r2(val3 - bankBalance));
     return [r1, r2v, r3];
   }
 
@@ -980,8 +967,21 @@ function App() {
       .filter(sp=>sp.totalToday>0||sp.todayLbs>0)
       .map(sp=>{
         const cov = coverageWeeks[sp.id]||{spawn:0,block:0};
-        const [sb1,sb2,sb3] = applyOffset(sp.spawnBags1,sp.spawnBags2,sp.spawnBags3,cov.spawn);
-        const [bk1,bk2,bk3] = applyOffset(sp.blocks1,sp.blocks2,sp.blocks3,cov.block);
+        // Calculate week-0 bank balance inline (surplus=positive, deficit=negative)
+        const todayLbs0 = (() => {
+          let lbs = 0;
+          clients.forEach(cl => { lbs += parseFloat(orders[cl.id]?.[sp.id]??0)||0; });
+          liveItems.forEach(item => { lbs += parseFloat(item.orders?.[sp.id]??0)||0; });
+          return lbs;
+        })();
+        const neededBlocks0 = todayLbs0 > 0 ? r2(todayLbs0 / sp.blockDivisor) : 0;
+        const neededSpawn0 = neededBlocks0 > 0 ? r2(neededBlocks0 / getSpawnBagBlocks(sp)) : 0;
+        const haveBlocks0 = r2(cov.block);
+        const haveSpawn0 = r2(cov.spawn);
+        const blockBankBalance = r2(haveBlocks0 - neededBlocks0);
+        const spawnBankBalance = r2(haveSpawn0 - neededSpawn0);
+        const [sb1,sb2,sb3] = applyOffset(sp.spawnBags1,sp.spawnBags2,sp.spawnBags3, spawnBankBalance);
+        const [bk1,bk2,bk3] = applyOffset(sp.blocks1,sp.blocks2,sp.blocks3, blockBankBalance);
         const fruitLoadedAmt = getFruitLoaded(sp.id);
         // Adjust fruiting room loading by substitutions only — don't subtract already loaded
         // The target always reflects full weekly demand; fruitLoadedAmt shown as progress
@@ -3386,7 +3386,7 @@ function App() {
                   </div>
                   {isOpen&&(
                     <div style={{marginTop:10}}>
-                      <p style={{margin:"0 0 8px",fontSize:11,color:"#5a8a5a"}}>Select species to retake. Only incubating {type==="block"?"blocks":"bags"} will be cleared — fruiting room entries stay.</p>
+                      <p style={{margin:"0 0 8px",fontSize:11,color:"#5a8a5a"}}>Select species to retake. All {type==="block"?"block":"spawn bag"} entries will be cleared — re-log your actual inventory with the correct bag dates.</p>
                       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
                         <button onClick={()=>{
                           const all={};
@@ -3411,24 +3411,15 @@ function App() {
                         const selectedIds = Object.keys(retakeInv.selected).filter(id=>retakeInv.selected[id]).map(Number);
                         if(selectedIds.length===0){alert("Select at least one species.");return;}
                         const spNames = selectedIds.map(id=>species.find(s=>s.id===id)?.name).filter(Boolean).join(", ");
-                        if(!window.confirm(`Clear incubating ${type==="block"?"block":"spawn bag"} inventory for: ${spNames}?\n\nOnly entries still in incubation will be removed. Fruiting room entries stay.\n\nAre you sure?`)) return;
-                        setTracker(prev=>{
-                          return prev.filter(e=>{
-                            const spId = e.speciesId||e.sid;
-                            if(!selectedIds.includes(spId)) return true; // keep other species
-                            if(e.type!==type) return true; // keep other type
-                            if(e.entryClass==='consumed') return true; // keep consumed
-                            const sp = species.find(s=>s.id===spId);
-                            if(!sp) return true;
-                            const daysOld = -dateToDayOffset(e.date);
-                            const threshold = type==="block" ? getBlockIncubDays(sp) : (sp.spawnDays??(sp.spawnWeeks*7));
-                            // Keep entries that are past incubation (in fruiting room)
-                            if(daysOld >= threshold) return true;
-                            // Remove entries still in incubation
-                            return false;
-                          });
-                        });
-                        // Save inventory record
+                        if(!window.confirm(`Clear ALL ${type==="block"?"block":"spawn bag"} inventory for: ${spNames}?\n\nAll entries will be removed. Re-log your actual inventory with the correct bag dates.\n\nAre you sure?`)) return;
+                        setTracker(prev=>prev.filter(e=>{
+                          const spId = e.speciesId||e.sid;
+                          if(!selectedIds.includes(spId)) return true;
+                          if(e.type!==type) return true;
+                          if(e.entryClass==='consumed') return true;
+                          // Clear ALL entries for this species/type — user will re-log with correct dates
+                          return false;
+                        }));
                         const allSelected = selectedIds.length === species.length;
                         setLastInventory(p=>({...p,[type]:{
                           date: todayStr(),
@@ -4361,13 +4352,13 @@ function App() {
 
 
 
-  window.addEventListener('load', function() {
-    try {
+  window.addEventListener('load', function() {{
+    try {{
       ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Root));
-    } catch(e) {
+    }} catch(e) {{
       document.getElementById('splash').innerHTML = '<p style="color:#e07b8a;padding:20px;text-align:center;font-size:12px">Error: ' + e.message + '</p>';
-    }
-  });
+    }}
+  }});
 </script>
 </body>
 </html>
