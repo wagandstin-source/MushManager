@@ -960,13 +960,18 @@ function App() {
       const fromSp = species.find(s=>s.id===sub.fromSpeciesId);
       const toSp = species.find(s=>s.id===sub.toSpeciesId);
       if(!fromSp||!toSp) return;
-      // Only apply to fruiting if the substituted blocks are actually ready to load
+      // Check if blocks are ready — use tracker entry if available, otherwise use sub date
       const entry = (tracker||[]).find(e=>e.id===sub.trackerEntryId);
-      if(!entry) return;
-      const daysOld = -dateToDayOffset(entry.date);
-      const isReady = daysOld >= getBlockIncubDays(fromSp);
+      let isReady = false;
+      if(entry) {
+        const daysOld = -dateToDayOffset(entry.date);
+        isReady = daysOld >= getBlockIncubDays(fromSp);
+      } else {
+        // No tracker entry — use the substitution date itself
+        const daysOld = -dateToDayOffset(sub.date);
+        isReady = daysOld >= getBlockIncubDays(fromSp);
+      }
       if(!isReady) return;
-      // Move fruiting room demand from toSp (destination) to fromSp (actual blocks)
       fruitSubOut[sub.toSpeciesId] = r2((fruitSubOut[sub.toSpeciesId]||0) + sub.qty);
       fruitSubIn[sub.fromSpeciesId] = r2((fruitSubIn[sub.fromSpeciesId]||0) + sub.qty);
     });
