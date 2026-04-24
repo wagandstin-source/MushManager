@@ -980,7 +980,7 @@ function App() {
         const subIn = fruitSubIn[sp.id]||0;
         const subOut = fruitSubOut[sp.id]||0;
         const fruitTarget = r2(Math.max(0,(sp.fruitBlocks||0)));
-        const fruitRemain = r2(Math.max(0, fruitTarget - subOut + subIn));
+        const fruitRemain = r2(Math.max(0, fruitTarget - fruitLoadedAmt - subOut + subIn));
         const hasFruitSub = subIn > 0 || subOut > 0;
         return{...sp,
           spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
