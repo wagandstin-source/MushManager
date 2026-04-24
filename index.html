@@ -575,12 +575,15 @@ function App() {
     }
 
     // Filter to days within this week window that client operates
+    // For near-term offsets use exact window; for far offsets use whatever is available in forecast
+    const targetStart = weekOffset * 7;
+    const targetEnd = Math.min((weekOffset + 1) * 7, 16); // cap at 16-day forecast
     const wkScores = scores.filter(w=>{
       const d = new Date(w.date+'T12:00:00');
       const dow = d.getDay();
       if(!opDays.has(dow)) return false;
       const daysAhead = Math.round((d-today)/(24*60*60*1000));
-      return daysAhead>=weekOffset*7 && daysAhead<(weekOffset+1)*7+7;
+      return daysAhead >= targetStart && daysAhead < targetEnd + 7;
     });
 
     if(!wkScores.length) return null;
