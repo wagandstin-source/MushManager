@@ -274,16 +274,21 @@ const CustomTooltip = ({ active, payload, label }) => {
 function App() {
   function save(k,v){try{_ls.setItem('mfp_'+k,JSON.stringify(v));}catch(e){}}
   function load(k,d){try{const v=_ls.getItem('mfp_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
-  const [species,   setSpecies]   = useState(DEFAULT_SPECIES);
-  const [clients,   setClients]   = useState(DEFAULT_CLIENTS);
-  const [orders,    setOrders]    = useState(DEFAULT_ORDERS);
-  const [seasonal,  setSeasonal]  = useState(DEFAULT_SEASONAL);
+  const [species,   setSpeciesRaw]   = useState(()=>load('species',  DEFAULT_SPECIES));
+  function setSpecies(v){const val=typeof v==='function'?v(species):v;setSpeciesRaw(val);save('species',val);}
+  const [clients,   setClientsRaw]   = useState(()=>load('clients',  DEFAULT_CLIENTS));
+  function setClients(v){const val=typeof v==='function'?v(clients):v;setClientsRaw(val);save('clients',val);}
+  const [orders,    setOrdersRaw]    = useState(()=>load('orders',   DEFAULT_ORDERS));
+  function setOrders(v){const val=typeof v==='function'?v(orders):v;setOrdersRaw(val);save('orders',val);}
+  const [seasonal,  setSeasonalRaw]  = useState(()=>load('seasonal', DEFAULT_SEASONAL));
+  function setSeasonal(v){const val=typeof v==='function'?v(seasonal):v;setSeasonalRaw(val);save('seasonal',val);}
   const [tracker,   setTrackerRaw]   = useState(()=>load('tracker',[]));
   function setTracker(v){const val=typeof v==='function'?v(tracker):v;setTrackerRaw(val);save('tracker',val);}
   const [losses,    setLossesRaw]    = useState(()=>load('losses',[]));
   function setLosses(v){const val=typeof v==='function'?v(losses):v;setLossesRaw(val);save('losses',val);}
   const [upcoming,  setUpcoming]  = useState([]);
-  const [schedule,  setSchedule]  = useState(DEFAULT_SCHEDULE);
+  const [schedule,  setScheduleRaw]  = useState(()=>load('schedule', DEFAULT_SCHEDULE));
+  function setSchedule(v){const val=typeof v==='function'?v(schedule):v;setScheduleRaw(val);save('schedule',val);};
   const [activeTab, setActiveTab] = useState("today");
   const [newEntry,  setNewEntry]  = useState({ type:"block", speciesId:"", date:todayStr(), qty:"", note:"" });
   const [ns, setNs] = useState({ name:"", spawnWeeks:6, spawnDays:42, blockWeeks:4, blockIncubDays:17, fruitDays:11, blockDivisor:2, spawnBagBlocks:12, color:"#7ec8a0", exactFruit:false });
