@@ -286,7 +286,8 @@ function App() {
   function setTracker(v){const val=typeof v==='function'?v(tracker):v;setTrackerRaw(val);save('tracker',val);}
   const [losses,    setLossesRaw]    = useState(()=>load('losses',[]));
   function setLosses(v){const val=typeof v==='function'?v(losses):v;setLossesRaw(val);save('losses',val);}
-  const [upcoming,  setUpcoming]  = useState([]);
+  const [upcoming,  setUpcomingRaw]  = useState(()=>load('upcoming', []));
+  function setUpcoming(v){const val=typeof v==='function'?v(upcoming):v;setUpcomingRaw(val);save('upcoming',val);}
   const [schedule,  setScheduleRaw]  = useState(()=>load('schedule', DEFAULT_SCHEDULE));
   function setSchedule(v){const val=typeof v==='function'?v(schedule):v;setScheduleRaw(val);save('schedule',val);};
   const [activeTab, setActiveTab] = useState("today");
