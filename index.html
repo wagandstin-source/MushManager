@@ -488,6 +488,30 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fruitingRoom]);
 
+  // Migrate tracker blocks that are currently in their fruiting period but not in fruitingRoom state
+  useEffect(()=>{
+    const today = new Date(); today.setHours(0,0,0,0);
+    const todayKey = todayStr();
+    const existingIds = new Set((fruitingRoom||[]).map(e=>e.srcId).filter(Boolean));
+    const toAdd = [];
+    tracker.filter(e=>e.type==='block'&&!e.entryClass&&(parseFloat(e.qty)||0)>0).forEach(e=>{
+      if(existingIds.has(e.id)) return; // already migrated
+      const sp = species.find(s=>s.id===(e.speciesId||e.sid));
+      if(!sp) return;
+      const inocDate = new Date(e.date+'T12:00:00');
+      const incubDays = getBlockIncubDays(sp);
+      const fruitStart = new Date(inocDate); fruitStart.setDate(inocDate.getDate()+incubDays);
+      const fruitEnd = new Date(fruitStart); fruitEnd.setDate(fruitStart.getDate()+sp.fruitDays);
+      if(today >= fruitStart && today < fruitEnd){
+        // This batch is currently in its fruiting period — add to fruitingRoom
+        const loadDate = fruitStart.toISOString().slice(0,10);
+        toAdd.push({ id:Date.now()+Math.random(), srcId:e.id, speciesId:sp.id, qty:parseFloat(e.qty), loadDate, fruitDays:sp.fruitDays });
+      }
+    });
+    if(toAdd.length>0) setFruitingRoom(p=>[...(p||[]),...toAdd]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[tracker, species]);
+
   // Score a single day: 0 (terrible) to 1 (perfect)
   function scoreDayWeather(maxTemp, precipitation, precipProb) {
     const tempScore = maxTemp >= 22 ? 1 : maxTemp >= 18 ? 0.8 : maxTemp >= 14 ? 0.5 : maxTemp >= 8 ? 0.2 : 0;
@@ -688,7 +712,7 @@ function App() {
   function getRoomOccupancy(dayOffset=0) {
     const targetDate = new Date(); targetDate.setHours(0,0,0,0);
     targetDate.setDate(targetDate.getDate() + dayOffset);
-    let incubation = 0, fruiting = 0;
+    let incubation = 0;
     tracker.filter(e=>e.type==='block'&&e.entryClass!=='loss'&&e.entryClass!=='consumed').forEach(e=>{
       const sp = species.find(s=>s.id===(e.speciesId||e.sid));
       if(!sp) return;
@@ -698,12 +722,11 @@ function App() {
       const incubDays = getBlockIncubDays(sp);
       const fruitStart = new Date(inocDate); fruitStart.setDate(inocDate.getDate()+incubDays);
       const fruitEnd = new Date(fruitStart); fruitEnd.setDate(fruitStart.getDate()+sp.fruitDays);
-      const daysFromInoc = Math.round((targetDate-inocDate)/(24*60*60*1000));
-      const daysFromFruitStart = Math.round((targetDate-fruitStart)/(24*60*60*1000));
-      if(daysFromInoc>=0 && daysFromFruitStart<0) incubation+=qty; // in incubation
-      else if(daysFromFruitStart>=0 && targetDate<fruitEnd) fruiting+=qty; // in fruiting room
+      if(targetDate<fruitEnd) incubation+=qty; // count all blocks not yet harvested
     });
-    return { incubation: Math.round(incubation), fruiting: Math.round(fruiting) };
+    // Fruiting room = everything explicitly logged into the fruiting room
+    const fruiting = Math.round((fruitingRoom||[]).reduce((sum,e)=>sum+(parseFloat(e.qty)||0),0));
+    return { incubation: Math.round(incubation), fruiting };
   }
 
   // Find the day offset when the shortest-lead batch currently in incubation will hit fruiting room
@@ -1034,11 +1057,26 @@ function App() {
         const fruitTarget = r2(Math.max(0,(sp.fruitBlocks||0)));
         const fruitRemain = r2(Math.max(0, fruitTarget - fruitLoadedAmt - subOut + subIn));
         const hasFruitSub = subIn > 0 || subOut > 0;
+
+        // Oldest ready block in incubation — for fruiting room load hint
+        const readyBlocks = tracker
+          .filter(e=>e.type==='block'&&(e.speciesId||e.sid)===sp.id&&!e.entryClass&&(parseFloat(e.qty)||0)>0)
+          .filter(e=>-dateToDayOffset(e.date)>=getBlockIncubDays(sp))
+          .sort((a,b)=>a.date.localeCompare(b.date));
+        const oldestReadyBlock = readyBlocks[0]?.date||null;
+
+        // Oldest spawn in inventory — for inoculation hint (not yet consumed)
+        const availableSpawn = tracker
+          .filter(e=>e.type==='spawn'&&(e.speciesId||e.sid)===sp.id&&e.entryClass!=='consumed'&&e.entryClass!=='loss'&&(parseFloat(e.qty)||0)>0)
+          .sort((a,b)=>a.date.localeCompare(b.date));
+        const oldestSpawn = availableSpawn[0]?.date||null;
+
         return{...sp,
           spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
           blocks1:bk1, blocks2:bk2, blocks3:bk3,
           fruitBlocks:fruitRemain,
           fruitSubIn:subIn, fruitSubOut:subOut, hasFruitSub,
+          oldestReadyBlock, oldestSpawn,
         };
       });
   },[thisWeek,coverageWeeks,fruitLoaded,schedule,substitutions,tracker,species]);
@@ -3222,10 +3260,12 @@ function App() {
                           {label:"🌾 Make spawn bags", sched:sp.spawnScheduled, harvest:sp.spawnHarvestLabel, lbs:sp.spawnLbs,
                            vals:[["1wk",sp.spawnBags1],["2wk",sp.spawnBags2],["3wk",sp.spawnBags3]], unit:"bags", color:"#e8a87c", type:"spawn", field:"spawn"},
                           {label:"🧱 Inoculate blocks", sched:sp.blockScheduled, harvest:sp.blockHarvestLabel, lbs:sp.blockLbs,
-                           vals:[["1wk",sp.blocks1],["2wk",sp.blocks2],["3wk",sp.blocks3]], unit:"blocks", color:"#a78bda", type:"block", field:"block"},
+                           vals:[["1wk",sp.blocks1],["2wk",sp.blocks2],["3wk",sp.blocks3]], unit:"blocks", color:"#a78bda", type:"block", field:"block",
+                           oldestDate:sp.oldestSpawn, oldestLabel:"Oldest spawn"},
                           {label:`🚪 Load fruiting room${sp.exactFruit?" (exact)":""}`, sched:sp.fruitScheduled, harvest:sp.fruitHarvestLabel, lbs:sp.fruitLbs,
                            vals:[["this wk",sp.fruitBlocks]], unit:"blocks", color:"#7ec8a0", type:"block", field:"fruit",
-                           fruitLoaded:fruitLoadedAmt, fruitTotal:sp.fruitBlocks||0, fruitDefault},
+                           fruitLoaded:fruitLoadedAmt, fruitTotal:sp.fruitBlocks||0, fruitDefault,
+                           oldestDate:sp.oldestReadyBlock, oldestLabel:"Oldest ready"},
                         ];
 
                         return boxes.map(box=>(
@@ -3256,6 +3296,11 @@ function App() {
                               Harvest → <strong style={{color:"#a8c890"}}>{box.harvest}</strong>
                               {" · "}<strong style={{color:"#d4e8c2"}}>{fmt(box.lbs)} lbs</strong>
                             </p>
+                            {box.oldestDate&&(
+                              <p style={{margin:"0 0 6px",fontSize:10,color:"#5a8a5a"}}>
+                                {box.oldestLabel}: <strong style={{color:"#f4d06f"}}>{box.oldestDate}</strong>
+                              </p>
+                            )}
                             {box.field==="fruit"&&(
                               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                                 <p style={{margin:0,fontSize:9,color:"#5a8a5a"}}>
