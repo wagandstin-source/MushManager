@@ -715,20 +715,20 @@ function App() {
   function getRoomOccupancy(dayOffset=0) {
     const targetDate = new Date(); targetDate.setHours(0,0,0,0);
     targetDate.setDate(targetDate.getDate() + dayOffset);
+    // Incubation = all blocks in tracker not consumed/lost and not in fruitingRoom
+    const fruitingRoomIds = new Set((fruitingRoom||[]).map(e=>e.srcId).filter(Boolean));
     let incubation = 0;
     tracker.filter(e=>e.type==='block'&&e.entryClass!=='loss'&&e.entryClass!=='consumed').forEach(e=>{
-      const sp = species.find(s=>s.id===(e.speciesId||e.sid));
-      if(!sp) return;
       const qty = parseFloat(e.qty)||0;
       if(qty<=0) return;
-      const inocDate = new Date(e.date+'T12:00:00');
-      const incubDays = getBlockIncubDays(sp);
-      const fruitStart = new Date(inocDate); fruitStart.setDate(inocDate.getDate()+incubDays);
-      const fruitEnd = new Date(fruitStart); fruitEnd.setDate(fruitStart.getDate()+sp.fruitDays);
-      if(targetDate<fruitEnd) incubation+=qty; // count all blocks not yet harvested
+      // Don't count blocks that were migrated into fruitingRoom
+      if(fruitingRoomIds.has(e.id)) return;
+      incubation += qty;
     });
+    // Subtract blocks already in fruitingRoom from incubation (they've moved out)
+    const fruitingTotal = (fruitingRoom||[]).reduce((s,e)=>s+(parseFloat(e.qty)||0),0);
     // Fruiting room = everything explicitly logged into the fruiting room
-    const fruiting = Math.round((fruitingRoom||[]).reduce((sum,e)=>sum+(parseFloat(e.qty)||0),0));
+    const fruiting = Math.round(fruitingTotal);
     return { incubation: Math.round(incubation), fruiting };
   }
 
@@ -1096,8 +1096,10 @@ function App() {
     const fruitOcc = new Array(days+1).fill(0);
 
     // 1. Existing tracker batches
-    // Today's fruiting count comes from fruitingRoom state via getRoomOccupancy (matches inventory)
-    fruitOcc[0] = getRoomOccupancy(0).fruiting;
+    // Today's counts come directly from inventory (fruitingRoom state + tracker)
+    const todayOcc = getRoomOccupancy(0);
+    fruitOcc[0] = todayOcc.fruiting;
+    incubOcc[0] = todayOcc.incubation;
 
     tracker.filter(e=>e.type==='block'&&e.entryClass!=='loss'&&e.entryClass!=='consumed'&&(e.qty||0)>0).forEach(e=>{
       const sp = species.find(s=>s.id===(e.speciesId||e.sid));
