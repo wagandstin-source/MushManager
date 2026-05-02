@@ -286,6 +286,9 @@ function App() {
   function setTracker(v){const val=typeof v==='function'?v(tracker):v;setTrackerRaw(val);save('tracker',val);}
   const [losses,    setLossesRaw]    = useState(()=>load('losses',[]));
   function setLosses(v){const val=typeof v==='function'?v(losses):v;setLossesRaw(val);save('losses',val);}
+  const [invGroupBy, setInvGroupByRaw] = useState(()=>load('invGroupBy',{spawn:'date',block:'date',fruit:'date'}));
+  function setInvGroupBy(v){const val=typeof v==='function'?v(invGroupBy):v;setInvGroupByRaw(val);save('invGroupBy',val);}
+  const [invExpanded, setInvExpanded] = useState({});
   const [upcoming,  setUpcomingRaw]  = useState(()=>load('upcoming', []));
   function setUpcoming(v){const val=typeof v==='function'?v(upcoming):v;setUpcomingRaw(val);save('upcoming',val);}
   const [schedule,  setScheduleRaw]  = useState(()=>load('schedule', DEFAULT_SCHEDULE));
@@ -3858,9 +3861,8 @@ function App() {
             {["spawn","block"].map(type=>{
               const color=type==="spawn"?"#e8a87c":"#a78bda";
               const typeLabel=type==="spawn"?"🌾 Spawn Bags":"🧱 Blocks";
-
-              // Group by date, merge same species+date
-              const grouped = {};
+              const groupBy=invGroupBy[type]||'date';
+              const grouped={};
               tracker.filter(e=>e.type===type&&e.entryClass!=='consumed').forEach(e=>{
                 const sp=species.find(s=>s.id===e.speciesId||s.id===e.sid);
                 if(!sp) return;
@@ -3869,27 +3871,43 @@ function App() {
                 grouped[key].qty=r2(grouped[key].qty+(parseFloat(e.qty)||0));
                 grouped[key].ids.push(e.id);
               });
-
-              // Sort by date (oldest first)
-              const rows = Object.values(grouped).sort((a,b)=>a.date.localeCompare(b.date));
-
+              const rows=Object.values(grouped).sort((a,b)=>a.date.localeCompare(b.date));
+              const groups={};
+              rows.forEach(r=>{
+                const key=groupBy==='date'?r.date:r.sp.name;
+                if(!groups[key]) groups[key]=[];
+                groups[key].push(r);
+              });
+              const groupKeys=Object.keys(groups).sort();
               return(
                 <div key={type} style={S.card}>
-                  <h3 style={{margin:"0 0 10px",color,fontSize:13}}>{typeLabel}</h3>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                    <h3 style={{margin:0,color,fontSize:13}}>{typeLabel}</h3>
+                    <button onClick={()=>setInvGroupBy(p=>({...p,[type]:p[type]==='date'?'species':'date'}))}
+                      style={{...S.btn("#1a2e1a"),fontSize:10,border:`1px solid ${color}`,padding:"3px 10px"}}>
+                      By {groupBy==='date'?'Species':'Date'}
+                    </button>
+                  </div>
                   {rows.length===0&&<p style={{color:"#3a5a3a",fontSize:12}}>None logged yet.</p>}
-                  {rows.length>0&&(
-                    <div>
-                      {/* Group by date */}
-                      {(()=>{
-                        const byDate={};
-                        rows.forEach(r=>{if(!byDate[r.date])byDate[r.date]=[];byDate[r.date].push(r);});
-                        return Object.entries(byDate)
-                          .sort(([a],[b])=>a.localeCompare(b))
-                          .map(([date,dateRows])=>(
-                          <div key={date} style={{marginBottom:10}}>
-                            <p style={{margin:"0 0 5px",fontSize:11,color:"#5a8a5a",fontWeight:"bold",borderBottom:"1px solid #1a2e1a",paddingBottom:3}}>{date}</p>
-                            {dateRows.map((row,ri)=>{
-                              const editKey=`${type}_${date}_${row.sp.id}`;
+                  {groupKeys.map(gk=>{
+                    const expandKey=`${type}_${gk}`;
+                    const isOpen=!!invExpanded[expandKey];
+                    const gRows=groups[gk];
+                    const total=r2(gRows.reduce((s,r)=>s+r.qty,0));
+                    return(
+                      <div key={gk} style={{marginBottom:6,border:"1px solid #1a2e1a",borderRadius:6,overflow:"hidden"}}>
+                        <div onClick={()=>setInvExpanded(p=>({...p,[expandKey]:!p[expandKey]}))}
+                          style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 10px",background:"#111e11",cursor:"pointer"}}>
+                          <span style={{fontWeight:"bold",fontSize:12,color:groupBy==='species'?gRows[0].sp.color:color}}>{gk}</span>
+                          <div style={{display:"flex",alignItems:"center",gap:10}}>
+                            <span style={{fontSize:11,color:"#5a8a5a"}}>{total} {type==="spawn"?"bags":"blocks"} · {gRows.length} {groupBy==='date'?'species':'date'}{gRows.length>1?"s":""}</span>
+                            <span style={{color:"#5a8a5a",fontSize:12}}>{isOpen?"▲":"▼"}</span>
+                          </div>
+                        </div>
+                        {isOpen&&(
+                          <div style={{padding:"6px 10px"}}>
+                            {gRows.map((row,ri)=>{
+                              const editKey=`${type}_${row.date}_${row.sp.id}`;
                               const isEditing=expandedPriceClient===editKey;
                               const tw=thisWeek.find(s=>s.id===row.sp.id);
                               const rate=type==="spawn"?tw?.weeklySpawnBags:tw?.weeklyBlocks;
@@ -3900,8 +3918,10 @@ function App() {
                               const cc=diff===null?"#5a8a5a":diff<=7?"#f4d06f":"#7ec8a0";
                               const ct=diff===null?"—":diff<=0?"Due soon":`${Math.floor(diff/7)}w ${diff%7}d`;
                               return(
-                                <div key={editKey} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:ri<dateRows.length-1?"1px solid #111e11":"none",flexWrap:"wrap"}}>
-                                  <span style={{color:row.sp.color,fontWeight:"bold",fontSize:12,minWidth:60}}>{row.sp.name}</span>
+                                <div key={editKey} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:ri<gRows.length-1?"1px solid #111e11":"none",flexWrap:"wrap"}}>
+                                  {groupBy==='date'
+                                    ?<span style={{color:row.sp.color,fontWeight:"bold",fontSize:12,minWidth:60}}>{row.sp.name}</span>
+                                    :<span style={{color:"#5a8a5a",fontSize:11,minWidth:60}}>{row.date}</span>}
                                   {isEditing?(
                                     <input type="number" min="0" step="0.5" autoFocus
                                       defaultValue={row.qty}
@@ -3911,7 +3931,6 @@ function App() {
                                           if(window.confirm("Set to 0? This will remove all entries for this batch."))
                                             setTracker(p=>p.filter(t=>!row.ids.includes(t.id)));
                                         } else {
-                                          // Update first entry qty, remove rest
                                           setTracker(p=>{
                                             const updated=p.map(t=>row.ids[0]===t.id?{...t,qty:newQty}:t);
                                             return updated.filter(t=>!row.ids.slice(1).includes(t.id));
@@ -3929,8 +3948,8 @@ function App() {
                                   <span style={{fontSize:10,color:cc,fontWeight:diff!==null&&diff<=7?"bold":"normal"}}>{ct}</span>
                                   {type==="block"&&(
                                     <button onClick={()=>{
-                                      const todayKey = todayStr();
-                                      setFruitingRoom(p=>[...(p||[]), { id:Date.now(), speciesId:row.sp.id, qty:row.qty, loadDate:todayKey, fruitDays:row.sp.fruitDays }]);
+                                      const todayKey=todayStr();
+                                      setFruitingRoom(p=>[...(p||[]),{id:Date.now(),speciesId:row.sp.id,qty:row.qty,loadDate:todayKey,fruitDays:row.sp.fruitDays}]);
                                       setTracker(p=>p.filter(t=>!row.ids.includes(t.id)));
                                       setToastLogged(true);
                                       setTimeout(()=>setToastLogged(false),1500);
@@ -3941,85 +3960,106 @@ function App() {
                                       setTracker(p=>p.filter(t=>!row.ids.includes(t.id)));
                                       setToastLogged(true);
                                       setTimeout(()=>setToastLogged(false),1500);
-                                    }}
-                                      style={{...S.btn("#3a7a3a"),padding:"2px 8px",fontSize:10}}>✓ Use</button>
+                                    }} style={{...S.btn("#3a7a3a"),padding:"2px 8px",fontSize:10}}>✓ Use</button>
                                   )}
                                   <button onClick={()=>setExpandedPriceClient(isEditing?null:editKey)}
                                     style={{...S.btn("#2a3a2a"),padding:"2px 6px",fontSize:10}}>✏️</button>
-                                  <button onClick={()=>{if(window.confirm(`Remove all ${row.sp.name} entries for ${date}?`))setTracker(p=>p.filter(t=>!row.ids.includes(t.id)));}}
+                                  <button onClick={()=>{if(window.confirm(`Remove all ${row.sp.name} entries for ${row.date}?`))setTracker(p=>p.filter(t=>!row.ids.includes(t.id)));}}
                                     style={{...S.btn("#5a2a2a"),padding:"2px 6px",fontSize:10}}>✕</button>
                                 </div>
                               );
                             })}
                           </div>
-                        ));
-                      })()}
-                    </div>
-                  )}
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
 
             {/* ── FRUITING ROOM ────────────────────────────────────────────── */}
             <div style={S.card}>
-              <h3 style={{margin:"0 0 10px",color:"#7ec8a0",fontSize:13}}>🍄 Fruiting Room</h3>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                <h3 style={{margin:0,color:"#7ec8a0",fontSize:13}}>🍄 Fruiting Room</h3>
+                <button onClick={()=>setInvGroupBy(p=>({...p,fruit:p.fruit==='date'?'species':'date'}))}
+                  style={{...S.btn("#1a2e1a"),fontSize:10,border:"1px solid #7ec8a0",padding:"3px 10px"}}>
+                  By {(invGroupBy.fruit||'date')==='date'?'Species':'Date'}
+                </button>
+              </div>
               {(()=>{
-                const todayKey = todayStr();
-                const today = new Date(todayKey+'T12:00:00'); today.setHours(0,0,0,0);
-                const rows = (fruitingRoom||[])
+                const todayKey=todayStr();
+                const today=new Date(todayKey+'T12:00:00'); today.setHours(0,0,0,0);
+                const rows=(fruitingRoom||[])
                   .map(e=>{
-                    const sp = species.find(s=>s.id===e.speciesId);
+                    const sp=species.find(s=>s.id===e.speciesId);
                     if(!sp) return null;
-                    const load = new Date((e.loadDate||todayKey)+'T12:00:00'); load.setHours(0,0,0,0);
-                    const daysIn = Math.floor((today - load) / 86400000);
-                    const fruitDays = parseFloat(e.fruitDays ?? sp.fruitDays ?? 0) || 0;
-                    const harvest = new Date(load); harvest.setDate(harvest.getDate() + fruitDays);
-                    const harvestKey = harvest.toISOString().slice(0,10);
-                    const qty = r2(parseFloat(e.qty)||0);
-                    const expectedLbs = r2(qty * (parseFloat(sp.blockDivisor)||0));
+                    const load=new Date((e.loadDate||todayKey)+'T12:00:00'); load.setHours(0,0,0,0);
+                    const daysIn=Math.floor((today-load)/86400000);
+                    const fruitDays=parseFloat(e.fruitDays??sp.fruitDays??0)||0;
+                    const harvest=new Date(load); harvest.setDate(harvest.getDate()+fruitDays);
+                    const harvestKey=harvest.toISOString().slice(0,10);
+                    const qty=r2(parseFloat(e.qty)||0);
+                    const expectedLbs=r2(qty*(parseFloat(sp.blockDivisor)||0));
                     return {e,sp,qty,daysIn,fruitDays,harvestKey,expectedLbs};
                   })
                   .filter(Boolean)
-                  .filter(r=>!(r.fruitDays>0 && r.daysIn>=r.fruitDays));
-
+                  .filter(r=>!(r.fruitDays>0&&r.daysIn>=r.fruitDays))
+                  .sort((a,b)=>(a.e.loadDate||"").localeCompare(b.e.loadDate||""));
                 if(rows.length===0) return <p style={{color:"#3a5a3a",fontSize:12}}>No blocks currently in the fruiting room.</p>;
-
-                return(
-                  <div>
-                    {rows
-                      .sort((a,b)=>(a.e.loadDate||"").localeCompare(b.e.loadDate||""))
-                      .map((r,i)=>(
-                        <div key={r.e.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",padding:"7px 0",borderBottom:i<rows.length-1?"1px solid #111e11":"none"}}>
-                          <span style={{color:r.sp.color,fontWeight:"bold",fontSize:12,minWidth:90}}>{r.sp.name}</span>
-                          <span style={{fontSize:10,color:"#5a8a5a"}}>Load: <strong style={{color:"#d4e8c2"}}>{r.e.loadDate}</strong></span>
-                          <span style={{fontSize:10,color:"#5a8a5a"}}>Qty: <strong style={{color:"#d4e8c2"}}>{r.qty}</strong> blks</span>
-                          <span style={{fontSize:10,color:"#5a8a5a"}}>In fruit: <strong style={{color:"#d4e8c2"}}>{Math.max(0,r.daysIn)}</strong>d</span>
-                          <span style={{fontSize:10,color:"#5a8a5a"}}>Harvest: <strong style={{color:"#7ec8a0"}}>{r.harvestKey}</strong></span>
-                          <span style={{fontSize:10,color:"#5a8a5a",flex:1}}>Est: <strong style={{color:"#d4e8c2"}}>{fmt(r.expectedLbs)}</strong> lbs</span>
-                          <button onClick={()=>{
-                            const ans = window.prompt("How many blocks lost?","");
-                            if(ans==null) return;
-                            const lost = r2(parseFloat(ans)||0);
-                            if(!lost || lost<=0) return;
-                            const lossQty = Math.min(lost, r.qty);
-                            setFruitingRoom(p=>{
-                              const next = (p||[]).map(x=>x.id===r.e.id?{...x, qty:r2((parseFloat(x.qty)||0) - lossQty)}:x)
-                                .filter(x=>(parseFloat(x.qty)||0) > 0);
-                              return next;
-                            });
-                            setLosses(p=>[...p,{
-                              id:Date.now(),
-                              type:"block",
-                              speciesId:r.sp.id,
-                              qty:lossQty,
-                              inoculationDate:todayKey,
-                              note:"Loss — fruiting room",
-                            }]);
-                          }} style={{...S.btn("#5a2a2a"),padding:"2px 8px",fontSize:10}}>🗑️ Loss</button>
+                const groupBy=invGroupBy.fruit||'date';
+                const groups={};
+                rows.forEach(r=>{
+                  const key=groupBy==='date'?r.e.loadDate:r.sp.name;
+                  if(!groups[key]) groups[key]=[];
+                  groups[key].push(r);
+                });
+                return Object.keys(groups).sort().map(gk=>{
+                  const expandKey=`fruit_${gk}`;
+                  const isOpen=!!invExpanded[expandKey];
+                  const gRows=groups[gk];
+                  const total=r2(gRows.reduce((s,r)=>s+r.qty,0));
+                  return(
+                    <div key={gk} style={{marginBottom:6,border:"1px solid #1a2e1a",borderRadius:6,overflow:"hidden"}}>
+                      <div onClick={()=>setInvExpanded(p=>({...p,[expandKey]:!p[expandKey]}))}
+                        style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 10px",background:"#111e11",cursor:"pointer"}}>
+                        <span style={{fontWeight:"bold",fontSize:12,color:groupBy==='species'?gRows[0].sp.color:"#7ec8a0"}}>{gk}</span>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>
+                          <span style={{fontSize:11,color:"#5a8a5a"}}>{total} blocks · {gRows.length} {groupBy==='date'?'species':'date'}{gRows.length>1?"s":""}</span>
+                          <span style={{color:"#5a8a5a",fontSize:12}}>{isOpen?"▲":"▼"}</span>
                         </div>
-                      ))}
-                  </div>
-                );
+                      </div>
+                      {isOpen&&(
+                        <div style={{padding:"6px 10px"}}>
+                          {gRows.map((r,i)=>(
+                            <div key={r.e.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",padding:"7px 0",borderBottom:i<gRows.length-1?"1px solid #111e11":"none"}}>
+                              {groupBy==='date'
+                                ?<span style={{color:r.sp.color,fontWeight:"bold",fontSize:12,minWidth:90}}>{r.sp.name}</span>
+                                :<span style={{color:"#5a8a5a",fontSize:11,minWidth:90}}>{r.e.loadDate}</span>}
+                              <span style={{fontSize:10,color:"#5a8a5a"}}>Qty: <strong style={{color:"#d4e8c2"}}>{r.qty}</strong> blks</span>
+                              <span style={{fontSize:10,color:"#5a8a5a"}}>In fruit: <strong style={{color:"#d4e8c2"}}>{Math.max(0,r.daysIn)}</strong>d</span>
+                              <span style={{fontSize:10,color:"#5a8a5a"}}>Harvest: <strong style={{color:"#7ec8a0"}}>{r.harvestKey}</strong></span>
+                              <span style={{fontSize:10,color:"#5a8a5a",flex:1}}>Est: <strong style={{color:"#d4e8c2"}}>{fmt(r.expectedLbs)}</strong> lbs</span>
+                              <button onClick={()=>{
+                                const ans=window.prompt("How many blocks lost?","");
+                                if(ans==null) return;
+                                const lost=r2(parseFloat(ans)||0);
+                                if(!lost||lost<=0) return;
+                                const lossQty=Math.min(lost,r.qty);
+                                setFruitingRoom(p=>{
+                                  const next=(p||[]).map(x=>x.id===r.e.id?{...x,qty:r2((parseFloat(x.qty)||0)-lossQty)}:x)
+                                    .filter(x=>(parseFloat(x.qty)||0)>0);
+                                  return next;
+                                });
+                                setLosses(p=>[...p,{id:Date.now(),type:"block",speciesId:r.sp.id,qty:lossQty,inoculationDate:todayKey,note:"Loss — fruiting room"}]);
+                              }} style={{...S.btn("#5a2a2a"),padding:"2px 8px",fontSize:10}}>🗑️ Loss</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
               })()}
             </div>
           </div>
@@ -4241,7 +4281,7 @@ function App() {
               </div>
               <button onClick={()=>setSeasonal(DEFAULT_SEASONAL)} style={{...S.btn("#5a2a2a"),marginTop:10}}>Reset to defaults</button>
             </div>
-          </div>
+        </div>
         )}
 
         {/* ── SETUP ────────────────────────────────────────────────────────── */}
