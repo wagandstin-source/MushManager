@@ -1424,7 +1424,21 @@ function App() {
     const dow = today.getDay();
     const daysBack = (dow - resetDay + 7) % 7;
     const weekStart = new Date(today); weekStart.setDate(today.getDate() - daysBack);
-    return weekStart.toISOString().slice(0,10);
+    // If today IS the reset day (daysBack===0), start a new week from today.
+    // Otherwise use the most recent past occurrence of the reset day.
+    // This means changing the reset day mid-week won't reset until the NEW reset day arrives.
+    // Check: does any existing fruitLoaded entry for a date AFTER weekStart exist?
+    // If so, we may be mid-week with a day change — keep using the most recent loaded key instead.
+    const key = weekStart.toISOString().slice(0,10);
+    // Find the most recently used key across all species to avoid mid-week resets
+    const allKeys = Object.values(fruitLoaded).flatMap(v => Object.keys(v||{}));
+    if(allKeys.length > 0) {
+      const mostRecent = allKeys.sort().reverse()[0];
+      // If the most recent key is AFTER the newly calculated weekStart, use it
+      // This prevents the reset day change from invalidating existing entries
+      if(mostRecent > key) return mostRecent;
+    }
+    return key;
   }
 
   function getFruitEntries(spId) {
