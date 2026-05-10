@@ -1498,6 +1498,17 @@ function App() {
     return r2(getFruitEntries(spId).reduce((a, e) => a + e.qty, 0));
   }
 
+  function getLastWeekFruitLoaded(spId) {
+    const currentKey = getFruitWeekKey();
+    const d = new Date(currentKey + 'T12:00:00');
+    d.setDate(d.getDate() - 7);
+    const lastKey = d.toISOString().slice(0,10);
+    const val = fruitLoaded[spId]?.[lastKey];
+    if (!val) return null;
+    if (Array.isArray(val)) return r2(val.reduce((a,e)=>a+e.qty,0));
+    return r2(val);
+  }
+
   // ── Substitution helpers ─────────────────────────────────────────────────
   // Get total blocks substituting FROM a species (reducing its coverage)
   function getSubstitutedOut(spId) {
@@ -3305,6 +3316,15 @@ function App() {
                       {needsSpawn&&<span style={{fontSize:11,color:"#e8a87c"}}>🌾 {fmt(sp.spawnBags1)}</span>}
                       {needsBlocks&&<span style={{fontSize:11,color:"#a78bda"}}>🧱 {fmt(sp.blocks1)}</span>}
                       {needsFruit&&<span style={{fontSize:11,color:"#7ec8a0"}}>🚪 {fmt(fruitRemaining)}</span>}
+                      {(()=>{
+                        const lwl=getLastWeekFruitLoaded(sp.id);
+                        if(lwl===null)return null;
+                        const lwt=r2((sp.fruitBlocks||0)+fruitLoadedAmt);
+                        const d=r2(lwl-lwt);
+                        if(d===0)return<span style={{fontSize:10,color:"#5a8a5a"}}>✓ on target last wk</span>;
+                        if(d<0)return<span style={{fontSize:10,color:"#e07b8a"}}>↓ {fmt(Math.abs(d))} missed last wk</span>;
+                        return<span style={{fontSize:10,color:"#f4d06f"}}>↑ {fmt(d)} extra last wk</span>;
+                      })()}
                       {!needsAction&&!needsFruit&&<span style={{fontSize:11,color:"#3a5a3a"}}>✓ covered</span>}
                       <span style={{fontSize:12,color:"#3a5a3a"}}>{isExpanded?"▲":"▼"}</span>
                     </div>
