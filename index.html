@@ -325,6 +325,10 @@ function App() {
   // fruitLoaded: { speciesId: { weekStr: blocksLoaded } } — resets on fruitResetDay
   const [fruitLoaded, setFruitLoadedRaw] = useState(()=>load('fruitLoaded', {}));
   function setFruitLoaded(v){const val=typeof v==='function'?v(fruitLoaded):v;setFruitLoadedRaw(val);save('fruitLoaded',val);}
+  // fruitWeekAdjust: { spId: { weekKey: deltaBlocks } } — manual catch-up/surplus adjustments per week
+  const [fruitWeekAdjust, setFruitWeekAdjustRaw] = useState(()=>load('fruitWeekAdjust', {}));
+  function setFruitWeekAdjust(v){const val=typeof v==='function'?v(fruitWeekAdjust):v;setFruitWeekAdjustRaw(val);save('fruitWeekAdjust',val);}
+  const [fruitAdjustConfirm, setFruitAdjustConfirm] = useState(null); // { spId, spName, spColor, delta, label, question }
   // fruitingRoom: [{ id, speciesId, qty, loadDate, fruitDays }]
   const [fruitingRoom, setFruitingRoomRaw] = useState(()=>load('fruitingRoom', []));
   function setFruitingRoom(v){const val=typeof v==='function'?v(fruitingRoom):v;setFruitingRoomRaw(val);save('fruitingRoom',val);}
@@ -1097,7 +1101,8 @@ function App() {
         // The target always reflects full weekly demand; fruitLoadedAmt shown as progress
         const subIn = fruitSubIn[sp.id]||0;
         const subOut = fruitSubOut[sp.id]||0;
-        const fruitTarget = r2(Math.max(0,(sp.fruitBlocks||0)));
+        const fruitAdjust = getFruitWeekAdjust(sp.id);
+        const fruitTarget = r2(Math.max(0,(sp.fruitBlocks||0) + fruitAdjust));
         const fruitRemain = r2(Math.max(0, fruitTarget - fruitLoadedAmt - subOut + subIn));
         const hasFruitSub = subIn > 0 || subOut > 0;
 
@@ -1122,7 +1127,7 @@ function App() {
           oldestReadyBlock, oldestSpawn,
         };
       });
-  },[thisWeek,coverageWeeks,fruitLoaded,schedule,substitutions,tracker,species]);
+  },[thisWeek,coverageWeeks,fruitLoaded,fruitWeekAdjust,schedule,substitutions,tracker,species]);
 
   // ── Full capacity simulation — projects room occupancy including planned inoculations ──
   const capacitySimulation = useMemo(()=>{
@@ -1507,6 +1512,84 @@ function App() {
     if (!val) return null;
     if (Array.isArray(val)) return r2(val.reduce((a,e)=>a+e.qty,0));
     return r2(val);
+  }
+
+  // Returns { yieldLbs, projLbs, delta, harvestWeekKey } for blocks loaded last week
+  // delta > 0 = surplus (yield exceeds projection), delta < 0 = shortage
+  // Returns null if no fruiting room entries were loaded last week for this species
+  function getFruitRoomCoverage(spId) {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const resetDay = schedule.fruitResetDay ?? 1;
+
+    // Get this week's start and last week's start
+    const dow = today.getDay();
+    const daysBack = (dow - resetDay + 7) % 7;
+    const thisWeekStart = new Date(today); thisWeekStart.setDate(today.getDate() - daysBack);
+    const lastWeekStart = new Date(thisWeekStart); lastWeekStart.setDate(thisWeekStart.getDate() - 7);
+    const thisWeekKey = thisWeekStart.toISOString().slice(0,10);
+    const lastWeekKey = lastWeekStart.toISOString().slice(0,10);
+
+    // Find fruiting room entries loaded last week for this species
+    const entries = (fruitingRoom||[]).filter(e => {
+      const ld = e.loadDate||'';
+      return e.speciesId === spId && ld >= lastWeekKey && ld < thisWeekKey;
+    });
+    if(entries.length === 0) return null;
+
+    // Find the species data for blockDivisor
+    const sp = species.find(s=>s.id===spId);
+    if(!sp) return null;
+
+    // Sum expected lbs yield from last week's entries
+    const yieldLbs = r2(entries.reduce((sum,e)=>{
+      const qty = parseFloat(e.qty)||0;
+      const divisor = parseFloat(sp.blockDivisor)||1;
+      return sum + qty * divisor;
+    },0));
+
+    // Find which week these entries harvest in — use first entry's harvest date
+    // (group by harvest week; most entries for same species will finish same week)
+    // Calculate harvest week offset from today for each entry, use the most common
+    const weekOffsets = entries.map(e=>{
+      const fruitDays = parseFloat(e.fruitDays ?? sp.fruitDays) || 0;
+      const load = new Date((e.loadDate)+'T12:00:00'); load.setHours(0,0,0,0);
+      const harvest = new Date(load); harvest.setDate(load.getDate() + fruitDays);
+      const daysUntil = Math.round((harvest - today) / 86400000);
+      return Math.round(daysUntil / 7);
+    });
+    // Use the week offset that covers the most yield
+    const offsetCounts = {};
+    entries.forEach((e,i)=>{
+      const wo = weekOffsets[i];
+      offsetCounts[wo] = (offsetCounts[wo]||0) + (parseFloat(e.qty)||0);
+    });
+    const harvestWeekOffset = parseInt(Object.entries(offsetCounts).sort((a,b)=>b[1]-a[1])[0][0]);
+
+    // Get projected lbs for that harvest week from thisWeek data
+    const twSp = thisWeek.find(s=>s.id===spId);
+    if(!twSp) return null;
+
+    // Project lbs at harvestWeekOffset — use fruitLbs as reference (it uses fruitWeatherOffset)
+    // We replicate the same offset logic: fruitWeatherOffset = min(2, round(fruitDays/7))
+    // For a direct comparison, use fruitLbs which already reflects the correct harvest week
+    const projLbs = twSp.fruitLbs;
+
+    const delta = r2(yieldLbs - projLbs);
+    return { yieldLbs, projLbs, delta, harvestWeekOffset };
+  }
+
+  function getFruitWeekAdjust(spId) {
+    const key = getFruitWeekKey();
+    return r2(fruitWeekAdjust[spId]?.[key] || 0);
+  }
+
+  function applyFruitWeekAdjust(spId, delta) {
+    const key = getFruitWeekKey();
+    setFruitWeekAdjust(prev => {
+      const sp = prev[spId] || {};
+      const current = sp[key] || 0;
+      return { ...prev, [spId]: { ...sp, [key]: r2(current + delta) } };
+    });
   }
 
   // ── Substitution helpers ─────────────────────────────────────────────────
@@ -2318,6 +2401,26 @@ function App() {
       {QuickLogPopup}
       {SpawnGuidePopup}
       {BlockLoadGuidePopup}
+      {fruitAdjustConfirm&&(
+        <div style={{position:"fixed",inset:0,background:"#000a",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center"}}
+          onClick={()=>setFruitAdjustConfirm(null)}>
+          <div style={{background:"#1a2e1a",border:`2px solid ${fruitAdjustConfirm.spColor}`,borderRadius:12,padding:"20px 24px",maxWidth:320,width:"90%",textAlign:"center"}}
+            onClick={e=>e.stopPropagation()}>
+            <p style={{margin:"0 0 6px",fontSize:13,color:fruitAdjustConfirm.spColor,fontWeight:"bold"}}>{fruitAdjustConfirm.spName}</p>
+            <p style={{margin:"0 0 16px",fontSize:12,color:"#d4e8c2"}}>{fruitAdjustConfirm.question}</p>
+            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+              <button onClick={()=>{applyFruitWeekAdjust(fruitAdjustConfirm.spId,fruitAdjustConfirm.delta);setFruitAdjustConfirm(null);}}
+                style={{...S.btn(fruitAdjustConfirm.spColor),padding:"6px 18px",fontSize:12,fontWeight:"bold"}}>
+                Yes — {fruitAdjustConfirm.label}
+              </button>
+              <button onClick={()=>setFruitAdjustConfirm(null)}
+                style={{...S.btn("#3a3a3a"),padding:"6px 18px",fontSize:12}}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toastLogged&&(
         <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1a3a1a",border:"1px solid #7ec8a0",color:"#d4e8c2",padding:"8px 12px",borderRadius:10,fontSize:12,fontWeight:"bold",zIndex:10000}}>
           ✓ Logged
@@ -3317,13 +3420,32 @@ function App() {
                       {needsBlocks&&<span style={{fontSize:11,color:"#a78bda"}}>🧱 {fmt(sp.blocks1)}</span>}
                       {needsFruit&&<span style={{fontSize:11,color:"#7ec8a0"}}>🚪 {fmt(fruitRemaining)}</span>}
                       {(()=>{
-                        const lwl=getLastWeekFruitLoaded(sp.id);
-                        if(lwl===null)return null;
-                        const lwt=r2((sp.fruitBlocks||0)+fruitLoadedAmt);
-                        const d=r2(lwl-lwt);
-                        if(d===0)return<span style={{fontSize:10,color:"#5a8a5a"}}>✓ on target last wk</span>;
-                        if(d<0)return<span style={{fontSize:10,color:"#e07b8a"}}>↓ {fmt(Math.abs(d))} missed last wk</span>;
-                        return<span style={{fontSize:10,color:"#f4d06f"}}>↑ {fmt(d)} extra last wk</span>;
+                        const cov=getFruitRoomCoverage(sp.id);
+                        if(!cov||cov.delta===0)return null;
+                        const alreadyApplied=getFruitWeekAdjust(sp.id);
+                        if(alreadyApplied!==0)return null;
+                        const isShortage=cov.delta<0;
+                        // Convert lbs delta to blocks
+                        const blkDelta=r2(Math.abs(cov.delta)/(sp.blockDivisor||1));
+                        const amt=fmt(blkDelta);
+                        const color=isShortage?"#e07b8a":"#f4d06f";
+                        const adjDelta=isShortage?blkDelta:-blkDelta;
+                        const label=isShortage?`↓ ${amt} blks short`:`↑ ${amt} blks surplus`;
+                        const question=isShortage
+                          ?`Last week's fruiting room blocks are ${fmt(Math.abs(cov.delta))} lbs short of the projected ${fmt(cov.projLbs)} lbs. Add ${amt} catch-up blocks to this week's target?`
+                          :`Last week's fruiting room blocks yield ${fmt(cov.delta)} lbs more than the projected ${fmt(cov.projLbs)} lbs. Remove ${amt} blocks from this week's target?`;
+                        const openConfirm=(e)=>{e.stopPropagation();setFruitAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:adjDelta,label,question});};
+                        return(
+                          <span
+                            onClick={openConfirm}
+                            onContextMenu={e=>{e.preventDefault();openConfirm(e);}}
+                            onTouchStart={e=>{e.currentTarget._pt=setTimeout(()=>openConfirm(e),600);}}
+                            onTouchEnd={e=>{clearTimeout(e.currentTarget._pt);}}
+                            onTouchMove={e=>{clearTimeout(e.currentTarget._pt);}}
+                            style={{fontSize:10,color,background:color+'18',border:`1px solid ${color}55`,borderRadius:4,padding:"1px 5px",cursor:"pointer",userSelect:"none"}}>
+                            {label}
+                          </span>
+                        );
                       })()}
                       {!needsAction&&!needsFruit&&<span style={{fontSize:11,color:"#3a5a3a"}}>✓ covered</span>}
                       <span style={{fontSize:12,color:"#3a5a3a"}}>{isExpanded?"▲":"▼"}</span>
@@ -3387,19 +3509,66 @@ function App() {
                                 {box.oldestLabel}: <strong style={{color:"#f4d06f"}}>{box.oldestDate}</strong>
                               </p>
                             )}
-                            {box.field==="fruit"&&(
-                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                                <p style={{margin:0,fontSize:9,color:"#5a8a5a"}}>
-                                  Loaded: <strong style={{color:"#a8c890"}}>{box.fruitLoaded}</strong>
-                                  {" / "}<strong style={{color:"#d4e8c2"}}>{fmt(box.fruitTotal)}</strong>
-                                  {" · Resets "}{DAYS[schedule.fruitResetDay??1]}
-                                </p>
-                                {box.fruitLoaded>0&&(
-                                  <button onClick={()=>undoLastFruitLoad(sp.id)}
-                                    style={{...S.btn("#5a2a2a"),padding:"1px 7px",fontSize:10}}>↩ Undo</button>
-                                )}
-                              </div>
-                            )}
+                            {box.field==="fruit"&&(()=>{
+                              const adj=getFruitWeekAdjust(sp.id);
+                              return(
+                                <div style={{marginBottom:6}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                                    <p style={{margin:0,fontSize:9,color:"#5a8a5a"}}>
+                                      Loaded: <strong style={{color:"#a8c890"}}>{box.fruitLoaded}</strong>
+                                      {" / "}<strong style={{color:"#d4e8c2"}}>{fmt(box.fruitTotal)}</strong>
+                                      {" · Resets "}{DAYS[schedule.fruitResetDay??1]}
+                                    </p>
+                                    {box.fruitLoaded>0&&(
+                                      <button onClick={()=>undoLastFruitLoad(sp.id)}
+                                        style={{...S.btn("#5a2a2a"),padding:"1px 7px",fontSize:10}}>↩ Undo</button>
+                                    )}
+                                  </div>
+                                  {(()=>{
+                                    const cov=getFruitRoomCoverage(sp.id);
+                                    if(!cov||cov.delta===0)return null;
+                                    const isShortage=cov.delta<0;
+                                    const blkDelta=r2(Math.abs(cov.delta)/(sp.blockDivisor||1));
+                                    const amt=fmt(blkDelta);
+                                    const color=isShortage?"#e07b8a":"#f4d06f";
+                                    const adjDelta=isShortage?blkDelta:-blkDelta;
+                                    const question=isShortage
+                                      ?`Last week's fruiting room blocks are ${fmt(Math.abs(cov.delta))} lbs short of the projected ${fmt(cov.projLbs)} lbs. Add ${amt} catch-up blocks to this week's target?`
+                                      :`Last week's fruiting room blocks yield ${fmt(cov.delta)} lbs more than the projected ${fmt(cov.projLbs)} lbs. Remove ${amt} blocks from this week's target?`;
+                                    if(adj!==0){
+                                      const adjColor=adj>0?"#e07b8a":"#f4d06f";
+                                      const adjLabel=adj>0?`+${fmt(adj)} catch-up`:`-${fmt(Math.abs(adj))} surplus`;
+                                      return(
+                                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+                                          <p style={{margin:0,fontSize:9,color:adjColor}}>
+                                            {isShortage
+                                              ?`↓ ${amt} blks short · yield ${fmt(cov.yieldLbs)} vs ${fmt(cov.projLbs)} lbs projected`
+                                              :`↑ ${amt} blks surplus · yield ${fmt(cov.yieldLbs)} vs ${fmt(cov.projLbs)} lbs projected`}
+                                            {" · "}<strong>{adjLabel} applied</strong>
+                                          </p>
+                                          <button onClick={()=>applyFruitWeekAdjust(sp.id,-adj)}
+                                            style={{...S.btn("#3a2a1a"),padding:"1px 6px",fontSize:9}}>✕ Remove</button>
+                                        </div>
+                                      );
+                                    }
+                                    return(
+                                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
+                                        <p style={{margin:0,fontSize:9,color}}>
+                                          {isShortage
+                                            ?`↓ ${amt} blks short · last wk yield ${fmt(cov.yieldLbs)} lbs vs ${fmt(cov.projLbs)} lbs projected`
+                                            :`↑ ${amt} blks surplus · last wk yield ${fmt(cov.yieldLbs)} lbs vs ${fmt(cov.projLbs)} lbs projected`}
+                                        </p>
+                                        <button
+                                          onClick={e=>{e.stopPropagation();setFruitAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:adjDelta,label:isShortage?`+${amt} catch-up`:`-${amt} surplus`,question});}}
+                                          style={{...S.btn(isShortage?"#5a2a2a":"#3a3a1a"),padding:"1px 7px",fontSize:9}}>
+                                          {isShortage?"+ Add to this week":"− Remove from this week"}
+                                        </button>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              );
+                            })()}
                             <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
                               {box.vals.map(([label,val],valIdx)=>{
                                 // Each button logs its own displayed value:
