@@ -938,7 +938,7 @@ function App() {
       return r2(lbs);
     };
 
-    const totalAt=(wo, upcomingLbs=0)=>r2(projRegularOnly(wo) + r2(upcomingLbs*(getSeasonal(wo,seasonal)/regularMult)) + extraAt(wo));
+    const totalAt=(wo, upcomingLbs=0)=>r2(projRegularOnly(wo) + upcomingLbs + extraAt(wo));
 
     const spawnUpLbs = upcomingLbsForStep(spawnPipelineDays, sp.spawnWeeks);
     const blockUpLbs = upcomingLbsForStep(blockPipelineDays, sp.blockWeeks);
