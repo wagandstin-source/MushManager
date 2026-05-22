@@ -140,16 +140,6 @@ function r2(n) { return n ? Math.round(n * 100) / 100 : 0; }
 function fmt(n) { if (!n || n === 0) return "—"; return Number(n.toFixed(2)).toString(); }
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 
-  // Returns today's date string, overridden by simDate when in sim mode
-  // Use this inside App instead of todayStr() for date-sensitive calcs
-  function effectiveTodayStr() { return simDate || todayStr(); }
-
-  // Guard for edits: if in sim mode, show warning popup first
-  function simGuard(fn) {
-    if (!simDate) { fn(); return; }
-    setSimWarning({ onConfirm: () => { setSimDate(null); setSimWarning(null); fn(); } });
-  }
-
 function weekLabel(offset) {
   const d = new Date(); d.setDate(d.getDate() + offset * 7);
   return d.toLocaleDateString("en-CA", { month:"short", day:"numeric" });
@@ -349,7 +339,16 @@ function App() {
   // simDate: string (YYYY-MM-DD) or null — date simulation mode
   const [simDate, setSimDate] = useState(null);
   const [showSimPicker, setShowSimPicker] = useState(false);
-  const [simWarning, setSimWarning] = useState(null); // { onConfirm } — shown when editing in sim mode
+  const [simWarning, setSimWarning] = useState(null);
+
+  // Returns today's date string, overridden by simDate when in sim mode
+  function effectiveTodayStr() { return simDate || todayStr(); }
+
+  // Guard for edits: if in sim mode, show warning popup first
+  function simGuard(fn) {
+    if (!simDate) { fn(); return; }
+    setSimWarning({ onConfirm: () => { setSimDate(null); setSimWarning(null); fn(); } });
+  } // { onConfirm } — shown when editing in sim mode
   // inocDismissed: { spId: { weekKey: blocksLogged } } — dismissed remainder recorded as "done"
   const [inocDismissed, setInocDismissedRaw] = useState(()=>load('inocDismissed', {}));
   function setInocDismissed(v){const val=typeof v==='function'?v(inocDismissed):v;setInocDismissedRaw(val);save('inocDismissed',val);}
