@@ -332,27 +332,7 @@ function App() {
   // inocWeekAdjust: { spId: { weekKey: deltaBlocks } } — carry-over from missed inoculation, mirrors fruitWeekAdjust
   const [inocWeekAdjust, setInocWeekAdjustRaw] = useState(()=>load('inocWeekAdjust', {}));
   function setInocWeekAdjust(v){const val=typeof v==='function'?v(inocWeekAdjust):v;setInocWeekAdjustRaw(val);save('inocWeekAdjust',val);}
-  const [inocAdjustConfirm, setInocAdjustConfirm] = useState(null);
-  // inocAutoCarry: bool — auto-add last week's shortfall to this week without prompt
-  const [inocAutoCarry, setInocAutoCarryRaw] = useState(()=>load('inocAutoCarry', false));
-  function setInocAutoCarry(v){const val=typeof v==='function'?v(inocAutoCarry):v;setInocAutoCarryRaw(val);save('inocAutoCarry',val);}
-  // simDate: string (YYYY-MM-DD) or null — date simulation mode
-  const [simDate, setSimDate] = useState(null);
-  const [showSimPicker, setShowSimPicker] = useState(false);
-  const [simWarning, setSimWarning] = useState(null);
-
-  // Returns today's date string, overridden by simDate when in sim mode
-  function effectiveTodayStr() { return simDate || todayStr(); }
-
-  // Guard for edits: if in sim mode, show warning popup first
-  function simGuard(fn) {
-    if (!simDate) { fn(); return; }
-    setSimWarning({ onConfirm: () => { setSimDate(null); setSimWarning(null); fn(); } });
-  } // { onConfirm } — shown when editing in sim mode
-  // inocDismissed: { spId: { weekKey: blocksLogged } } — dismissed remainder recorded as "done"
-  const [inocDismissed, setInocDismissedRaw] = useState(()=>load('inocDismissed', {}));
-  function setInocDismissed(v){const val=typeof v==='function'?v(inocDismissed):v;setInocDismissedRaw(val);save('inocDismissed',val);}
-  const [inocDismissConfirm, setInocDismissConfirm] = useState(null); // { spId, spName, spColor, remainder, type } type=block|spawn // { spId, spName, spColor, delta, label, question }
+  const [inocAdjustConfirm, setInocAdjustConfirm] = useState(null); // { spId, spName, spColor, delta, label, question }
   // fruitingRoom: [{ id, speciesId, qty, loadDate, fruitDays }]
   const [fruitingRoom, setFruitingRoomRaw] = useState(()=>load('fruitingRoom', []));
   function setFruitingRoom(v){const val=typeof v==='function'?v(fruitingRoom):v;setFruitingRoomRaw(val);save('fruitingRoom',val);}
@@ -408,21 +388,13 @@ function App() {
 
   const sortedUpcoming = useMemo(()=>[...upcoming].sort((a,b)=>new Date(a.startDate)-new Date(b.startDate)),[upcoming]);
   const thisWeekEvents = useMemo(()=>sortedUpcoming.filter(itemIsThisWeek),[sortedUpcoming]);
-  const liveItems = useMemo(()=>{
-    const clientNames = new Set(clients.map(cl => cl.name?.trim().toLowerCase()).filter(Boolean));
-    return sortedUpcoming.filter(item =>
-      itemIsLive(item) && !clientNames.has(item.name?.trim().toLowerCase())
-    );
-  },[sortedUpcoming, clients]);
+  const liveItems      = useMemo(()=>sortedUpcoming.filter(itemIsLive),[sortedUpcoming]);
 
   // Extra demand from upcoming items
   const extraDemand = useMemo(()=>{
     const demand={};
-    const clientNames = new Set(clients.map(cl => cl.name?.trim().toLowerCase()).filter(Boolean));
     upcoming.forEach(item=>{
       if(!item.orders)return;
-      // Skip if this upcoming item is already a regular client — avoid double counting
-      if(clientNames.has(item.name?.trim().toLowerCase())) return;
       // Apply readyDaysBefore buffer — shift the effective delivery date earlier
       const bufferDays = parseInt(item.readyDaysBefore)||0;
       const effectiveStartDayOffset = dateToDayOffset(item.startDate) - bufferDays;
@@ -443,7 +415,7 @@ function App() {
       });
     });
     return demand;
-  },[upcoming, clients]);
+  },[upcoming]);
 
   // Per-species totals (today)
   const spTotals = useMemo(()=>species.map(sp=>{
@@ -1012,7 +984,7 @@ function App() {
     const fruitHarvestLabel = daysLabel(sp.fruitDays);
 
     return{
-      ...sp,todayLbs,rawLbs,totalToday:todayLbs,hasUpcoming,
+      ...sp,todayLbs,totalToday:todayLbs,hasUpcoming,
       spawnLbs,spawnLbs2,spawnLbs3,spawnBags1,spawnBags2,spawnBags3,
       spawnScheduled, spawnHarvestLabel,
       blockLbs,blockLbs2,blockLbs3,blocks1,blocks2,blocks3,
@@ -1067,24 +1039,23 @@ function App() {
 
   function applyOffset(lbs1, lbs2, lbs3, byWeek) {
     // lbs1/2/3 = projected lbs demand for harvest week, harvest week+1, harvest week+2
-    // byWeek[w] = lbs of inventory already in pipeline harvesting that week
-    // Surplus carries forward to reduce next week's target
-    // Shortfall does NOT carry — each week's remain is independently what's still needed
-    // The caller accumulates (bl1+bl2+bl3) to get the cumulative total
+    // byWeek[w] = lbs of inventory harvesting that week
+    // Only surplus (inventory > demand for that week) carries forward to reduce next week's target
+    // A shortage never affects other weeks — can't fix it with today's blocks
     let carry = 0;
     const remainLbs = [lbs1, lbs2, lbs3];
     for(let w = 0; w <= 2; w++) {
       const available = r2((byWeek[w]||0) + carry);
       const demand = remainLbs[w]||0;
-      if(available >= demand) {
+      if(available > demand) {
         remainLbs[w] = 0;
-        carry = r2(available - demand); // only surplus carries forward
+        carry = r2(available - demand); // only the surplus carries forward
       } else {
         remainLbs[w] = r2(demand - available);
-        carry = 0; // shortage stops here — can't be fixed by later blocks
+        carry = 0; // shortage or exact match — nothing carries forward
       }
     }
-    return remainLbs;
+    return remainLbs; // caller divides by blockDivisor to get blocks
   }
 
   const activeSpecies = useMemo(()=>{
@@ -1162,38 +1133,6 @@ function App() {
         };
       });
   },[thisWeek,coverageWeeks,fruitLoaded,fruitWeekAdjust,inocWeekAdjust,schedule,substitutions,tracker,species]);
-
-  // Auto carry-over: when switch is on, apply last week's shortfall to this week for each species
-  useEffect(()=>{
-    if(!inocAutoCarry || activeSpecies.length === 0) return;
-    const resetDay = schedule.blockDay ?? 4;
-    const today = simDate ? new Date(simDate+'T12:00:00') : new Date(); today.setHours(0,0,0,0);
-    const js_dow = today.getDay();
-    const daysBack = (js_dow - resetDay + 7) % 7;
-    const thisStart = new Date(today); thisStart.setDate(today.getDate() - daysBack);
-    const lastStart = new Date(thisStart); lastStart.setDate(thisStart.getDate() - 7);
-    const thisKey = thisStart.toISOString().slice(0,10);
-    const lastKey = lastStart.toISOString().slice(0,10);
-    const lastEnd = thisKey;
-
-    activeSpecies.forEach(sp=>{
-      const lastWeekLogged = r2(tracker
-        .filter(e => e.type==='block' && e.speciesId===sp.id && e.date>=lastKey && e.date<lastEnd)
-        .reduce((a,e)=>a+(parseFloat(e.qty)||0), 0));
-      const lastWeekAdj = r2(inocWeekAdjust[sp.id]?.[lastKey]||0);
-      const lastWeekDismissed = r2(inocDismissed[sp.id+'_block']?.[lastKey]||0);
-      const currentAdj = r2(inocWeekAdjust[sp.id]?.[thisKey]||0);
-      const baseBlocks1 = r2(sp.blocks1 - currentAdj);
-      const lastWeekTarget = r2(baseBlocks1 + lastWeekAdj);
-      const shortfall = r2(Math.max(0, lastWeekTarget - lastWeekLogged - lastWeekDismissed));
-      if(shortfall > 0 && currentAdj !== shortfall) {
-        setInocWeekAdjust(prev=>({...prev,[sp.id]:{...(prev[sp.id]||{}),[thisKey]:shortfall}}));
-      } else if(shortfall === 0 && currentAdj > 0) {
-        setInocWeekAdjust(prev=>({...prev,[sp.id]:{...(prev[sp.id]||{}),[thisKey]:0}}));
-      }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[inocAutoCarry, activeSpecies, tracker, schedule.blockDay, inocWeekAdjust, inocDismissed, simDate]);
 
   // ── Full capacity simulation — projects room occupancy including planned inoculations ──
   const capacitySimulation = useMemo(()=>{
@@ -1571,15 +1510,12 @@ function App() {
 
   // ── Inoculation helpers (derived from tracker, no separate log needed) ────
   function getInocWeekBounds(offsetWeeks) {
-    const todayBase = simDate ? new Date(simDate+'T12:00:00') : new Date();
-    todayBase.setHours(0,0,0,0);
+    const today = new Date(); today.setHours(0,0,0,0);
     const resetDay = schedule.blockDay ?? 4;
-    const js_dow = todayBase.getDay();
-    const daysBack = (js_dow - resetDay + 7) % 7;
-    const thisWeekStart = new Date(todayBase);
-    thisWeekStart.setDate(todayBase.getDate() - daysBack);
-    const weekStart = new Date(thisWeekStart);
-    weekStart.setDate(thisWeekStart.getDate() + (offsetWeeks||0)*7);
+    const dow = today.getDay();
+    const daysBack = (dow - resetDay + 7) % 7;
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - daysBack + (offsetWeeks||0)*7);
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 7);
     return { start: weekStart.toISOString().slice(0,10), end: weekEnd.toISOString().slice(0,10) };
@@ -1608,32 +1544,6 @@ function App() {
       const current = sp[key] || 0;
       return { ...prev, [spId]: { ...sp, [key]: r2(current + delta) } };
     });
-  }
-
-  // Get blocks dismissed as "done" for this week for a species+type
-  function getInocDismissed(spId, type) {
-    const key = getInocWeekKey();
-    return r2(inocDismissed[spId+'_'+type]?.[key] || 0);
-  }
-
-  function setDismissRemainder(spId, type, qty) {
-    const key = getInocWeekKey();
-    const k = spId+'_'+type;
-    setInocDismissed(prev => ({ ...prev, [k]: { ...(prev[k]||{}), [key]: qty } }));
-  }
-
-  function undoDismissRemainder(spId, type) {
-    const key = getInocWeekKey();
-    const k = spId+'_'+type;
-    setInocDismissed(prev => { const n={...prev}; if(n[k]) { delete n[k][key]; } return n; });
-  }
-
-  // Count spawn bags inoculated this week from tracker
-  function getSpawnFromTracker(spId, offsetWeeks) {
-    const { start, end } = getInocWeekBounds(offsetWeeks ?? 0);
-    return r2(tracker
-      .filter(e => e.type === 'spawn' && e.speciesId === spId && e.date >= start && e.date < end)
-      .reduce((a, e) => a + (parseFloat(e.qty)||0), 0));
   }
 
   function getLastWeekFruitLoaded(spId) {
@@ -1927,17 +1837,13 @@ function App() {
   function submitWeekOrders(weekKey, ordersToSubmit, confirmed = true) {
     setOrderHistory(prev => {
       const next = {...prev};
-      // Store orders per client — weather-normalized so history reflects true demand potential
-      // Dividing by the weather nudge removes the weather effect from the stored baseline
-      // A bad weather week (nudge=0.8, sold 20lbs) stores as 25lbs — true underlying demand
+      // Store orders per client
       const entry = { _confirmed: confirmed, _date: weekKey };
       clients.forEach(cl => {
         entry[cl.id] = {};
-        const nudge = getForecastNudge(cl);
-        const normalizer = (schedule.weatherEnabled !== false && nudge > 0) ? nudge : 1.0;
         species.forEach(sp => {
           const lbs = parseFloat(ordersToSubmit[cl.id]?.[sp.id] ?? 0) || 0;
-          if (lbs > 0) entry[cl.id][sp.id] = r2(lbs / normalizer);
+          if (lbs > 0) entry[cl.id][sp.id] = lbs;
         });
       });
       next[weekKey] = entry;
@@ -2220,7 +2126,7 @@ function App() {
           })()}
 
           <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>simGuard(confirmQuickLog)}
+            <button onClick={confirmQuickLog}
               style={{...S.btn(),flex:1,padding:"10px",fontSize:14}}>✓ Confirm</button>
             <button onClick={()=>setQuickLog(null)}
               style={{...S.btn("#5a2a2a"),padding:"10px 14px",fontSize:14}}>✕</button>
@@ -2576,76 +2482,6 @@ function App() {
           </div>
         </div>
       )}
-      {inocDismissConfirm&&(
-        <div style={{position:"fixed",inset:0,background:"#000a",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center"}}
-          onClick={()=>setInocDismissConfirm(null)}>
-          <div style={{background:"#1a1a1a",border:`2px solid ${inocDismissConfirm.spColor}`,borderRadius:12,padding:"20px 24px",maxWidth:320,width:"90%",textAlign:"center"}}
-            onClick={e=>e.stopPropagation()}>
-            <p style={{margin:"0 0 6px",fontSize:13,color:inocDismissConfirm.spColor,fontWeight:"bold"}}>{inocDismissConfirm.spName}</p>
-            <p style={{margin:"0 0 4px",fontSize:12,color:"#d4e8c2"}}>
-              Mark remaining <strong>{fmt(inocDismissConfirm.remainder)}</strong> {inocDismissConfirm.type==="block"?"blocks":"spawn bags"} as done?
-            </p>
-            <p style={{margin:"0 0 16px",fontSize:10,color:"#5a8a5a"}}>They won't be counted as missed next week.</p>
-            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
-              <button onClick={()=>{setDismissRemainder(inocDismissConfirm.spId,inocDismissConfirm.type,inocDismissConfirm.remainder);setInocDismissConfirm(null);}}
-                style={{...S.btn(inocDismissConfirm.spColor),padding:"6px 18px",fontSize:12,fontWeight:"bold"}}>
-                Yes, dismiss
-              </button>
-              <button onClick={()=>setInocDismissConfirm(null)}
-                style={{...S.btn("#3a3a3a"),padding:"6px 18px",fontSize:12}}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {showSimPicker&&(
-        <div style={{position:"fixed",inset:0,background:"#000a",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}}
-          onClick={()=>setShowSimPicker(false)}>
-          <div style={{background:"#1a1a0a",border:"2px solid #f4d06f",borderRadius:12,padding:"20px 24px",maxWidth:300,width:"90%",textAlign:"center"}}
-            onClick={e=>e.stopPropagation()}>
-            <p style={{margin:"0 0 6px",fontSize:16}}>🗓️</p>
-            <p style={{margin:"0 0 12px",fontSize:13,color:"#f4d06f",fontWeight:"bold"}}>Simulate Date</p>
-            <p style={{margin:"0 0 12px",fontSize:11,color:"#5a8a5a"}}>Pick a date to see how the app would look on that day.</p>
-            <input type="date" defaultValue={simDate||todayStr()}
-              style={{width:"100%",padding:"8px",borderRadius:6,border:"1px solid #f4d06f",background:"#2a2a1a",color:"#f4d06f",fontSize:14,textAlign:"center",boxSizing:"border-box"}}
-              onChange={e=>{if(e.target.value){setSimDate(e.target.value);setShowSimPicker(false);}}} />
-            <div style={{display:"flex",gap:10,justifyContent:"center",marginTop:12}}>
-              {simDate&&(
-                <button onClick={()=>{setSimDate(null);setShowSimPicker(false);}}
-                  style={{...S.btn("#5a2a2a"),padding:"6px 14px",fontSize:12}}>
-                  Exit SIM
-                </button>
-              )}
-              <button onClick={()=>setShowSimPicker(false)}
-                style={{...S.btn("#3a3a3a"),padding:"6px 14px",fontSize:12}}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {simWarning&&(
-        <div style={{position:"fixed",inset:0,background:"#000a",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}}
-          onClick={()=>setSimWarning(null)}>
-          <div style={{background:"#1a1a0a",border:"2px solid #f4d06f",borderRadius:12,padding:"20px 24px",maxWidth:320,width:"90%",textAlign:"center"}}
-            onClick={e=>e.stopPropagation()}>
-            <p style={{margin:"0 0 6px",fontSize:16}}>⚠️</p>
-            <p style={{margin:"0 0 6px",fontSize:13,color:"#f4d06f",fontWeight:"bold"}}>Date Simulation Mode</p>
-            <p style={{margin:"0 0 16px",fontSize:12,color:"#d4e8c2"}}>You are simulating a different date. Would you like to exit simulation and make this change?</p>
-            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
-              <button onClick={()=>simWarning.onConfirm()}
-                style={{...S.btn("#f4d06f"),padding:"6px 18px",fontSize:12,fontWeight:"bold",color:"#1a1a0a"}}>
-                Yes, exit SIM
-              </button>
-              <button onClick={()=>setSimWarning(null)}
-                style={{...S.btn("#3a3a3a"),padding:"6px 18px",fontSize:12}}>
-                No, stay in SIM
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {toastLogged&&(
         <div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:"#1a3a1a",border:"1px solid #7ec8a0",color:"#d4e8c2",padding:"8px 12px",borderRadius:10,fontSize:12,fontWeight:"bold",zIndex:10000}}>
           ✓ Logged
@@ -2662,22 +2498,8 @@ function App() {
             </div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{display:"flex",alignItems:"center",gap:6,justifyContent:"flex-end"}}>
-              {simDate&&(
-                <>
-                  <span style={{fontSize:10,color:"#f4d06f",fontWeight:"bold",background:"#3a2a00",border:"1px solid #f4d06f",borderRadius:4,padding:"1px 5px"}}>SIM</span>
-                  <button onClick={()=>setSimDate(null)} style={{background:"transparent",border:"none",color:"#e07b8a",cursor:"pointer",fontSize:14,padding:"0 2px",lineHeight:1}}>✕</button>
-                </>
-              )}
-              <p onContextMenu={e=>{e.preventDefault();setShowSimPicker(true);}}
-                onTouchStart={e=>{ const t=setTimeout(()=>setShowSimPicker(true),600); e.currentTarget._simTimer=t; }}
-                onTouchEnd={e=>{ clearTimeout(e.currentTarget._simTimer); }}
-                style={{margin:0,fontSize:12,color:simDate?"#f4d06f":"#7ec8a0",fontWeight:"bold",cursor:"pointer",userSelect:"none",WebkitUserSelect:"none"}}
-                title="Hold/right-click to simulate date">
-                {new Date(simDate?simDate+'T12:00:00':new Date()).toLocaleDateString("en-CA",{month:"short",day:"numeric",year:"numeric"})}
-              </p>
-            </div>
-            <p style={{margin:0,fontSize:10,color:"#5a8a5a"}}>{new Date(simDate?simDate+'T12:00:00':new Date()).toLocaleDateString("en-CA",{weekday:"long"})}</p>
+            <p style={{margin:0,fontSize:12,color:"#7ec8a0",fontWeight:"bold"}}>{new Date().toLocaleDateString("en-CA",{month:"short",day:"numeric",year:"numeric"})}</p>
+            <p style={{margin:0,fontSize:10,color:"#5a8a5a"}}>{new Date().toLocaleDateString("en-CA",{weekday:"long"})}</p>
           </div>
         </div>
         <div style={{display:"flex",gap:2,flexWrap:"wrap"}}>
@@ -3632,17 +3454,6 @@ function App() {
         {/* ── TASKS ────────────────────────────────────────────────────────── */}
         {activeTab==="thisweek"&&(
           <div>
-            {/* Auto carry-over switch */}
-            <div style={{...S.card,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",marginBottom:8}}>
-              <div>
-                <p style={{margin:0,fontSize:12,fontWeight:"bold",color:"#a78bda"}}>🔁 Auto carry-over missed inoculation</p>
-                <p style={{margin:"2px 0 0",fontSize:10,color:"#5a8a5a"}}>Automatically adds last week's missed blocks & spawn to this week's targets</p>
-              </div>
-              <div onClick={()=>setInocAutoCarry(p=>!p)}
-                style={{width:42,height:24,borderRadius:12,background:inocAutoCarry?"#7c4dbd":"#2a2a2a",border:`1px solid ${inocAutoCarry?"#a78bda":"#3a3a3a"}`,cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
-                <div style={{position:"absolute",top:3,left:inocAutoCarry?20:3,width:16,height:16,borderRadius:"50%",background:inocAutoCarry?"#d4b8f0":"#5a5a5a",transition:"left 0.2s"}}/>
-              </div>
-            </div>
             {activeSpecies.length===0&&<div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered — go to 📋 Orders first.</div>}
             {activeSpecies.map(sp=>{
               const isExpanded = expandedTaskSpecies[sp.id];
@@ -3759,61 +3570,28 @@ function App() {
                                 {box.oldestLabel}: <strong style={{color:"#f4d06f"}}>{box.oldestDate}</strong>
                               </p>
                             )}
-                            {/* Spawn bags logged this week + dismiss */}
-                            {box.field==="spawn"&&(()=>{
-                              const spawnLoggedAmt = getSpawnFromTracker(sp.id, 0);
-                              const spawnDismissed = getInocDismissed(sp.id, 'spawn');
-                              const spawnRemainder = r2(Math.max(0, (sp.spawnBags1||0) - spawnLoggedAmt - spawnDismissed));
-                              return(
-                                <div style={{marginBottom:6}}>
-                                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
-                                    <p style={{margin:0,fontSize:9,color:"#5a8a5a"}}>
-                                      Logged this week: <strong style={{color:"#e8a87c"}}>{fmt(spawnLoggedAmt)}</strong>
-                                      {spawnDismissed>0&&<span style={{color:"#e8a87c"}}>{` · ${fmt(spawnDismissed)} dismissed`}</span>}
-                                      {" · Resets "}{DAYS[schedule.blockDay??4]}
-                                    </p>
-                                  </div>
-                                  {spawnRemainder>0&&(
-                                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                                      {spawnDismissed>0
-                                        ? <button onClick={()=>undoDismissRemainder(sp.id,'spawn')}
-                                            style={{...S.btn("#3a2a1a"),padding:"1px 7px",fontSize:9}}>↩ Undo dismiss</button>
-                                        : <button onClick={e=>{e.stopPropagation();setInocDismissConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,remainder:spawnRemainder,type:'spawn'});}}
-                                            style={{...S.btn("#2a1a0a"),border:"1px solid #e8a87c55",padding:"1px 7px",fontSize:9}}>✕ Dismiss remainder</button>
-                                      }
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })()}
+                            {/* Inoculation logged this week + carry-forward (mirrors fruiting room) */}
                             {box.field==="block"&&(()=>{
                               const inocLoggedAmt = getInocFromTracker(sp.id, 0);
                               const inocAdj = getInocWeekAdjust(sp.id);
-                              const dismissed = getInocDismissed(sp.id, 'block');
                               const lastWeekLogged = getInocFromTracker(sp.id, -1);
-                              // Last week's adjusted target (base + whatever carry was applied last week)
-                              const lastWeekKey = getInocWeekBounds(-1).start;
-                              const lastWeekAdj = r2(inocWeekAdjust[sp.id]?.[lastWeekKey]||0);
-                              const lastWeekDismissed = r2(inocDismissed[sp.id+'_block']?.[lastWeekKey]||0);
-                              const lastWeekTarget = r2((sp.blocks1 - inocAdj) + lastWeekAdj); // base target last week
-                              const shortfall = r2(Math.max(0, lastWeekTarget - lastWeekLogged - lastWeekDismissed));
+                              const lastWeekTarget = sp.blocks1||0;
+                              const shortfall = r2(Math.max(0, lastWeekTarget - lastWeekLogged));
                               const hasShortfall = shortfall > 0;
-                              const remainder = r2(Math.max(0, (sp.blocks1||0) - inocLoggedAmt - dismissed));
                               return(
                                 <div style={{marginBottom:6}}>
-                                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
                                     <p style={{margin:0,fontSize:9,color:"#5a8a5a"}}>
                                       Logged this week: <strong style={{color:"#a8c890"}}>{fmt(inocLoggedAmt)}</strong>
-                                      {dismissed>0&&<span style={{color:"#a78bda"}}>{` · ${fmt(dismissed)} dismissed`}</span>}
                                       {" · Resets "}{DAYS[schedule.blockDay??4]}
                                     </p>
                                   </div>
-                                  {hasShortfall&&!inocAutoCarry&&(()=>{
+                                  {hasShortfall&&(()=>{
                                     if(inocAdj!==0){
                                       return(
                                         <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
                                           <p style={{margin:0,fontSize:9,color:"#e07b8a"}}>
-                                            {`↓ ${fmt(shortfall)} blks missed last week · `}
+                                            {`↓ ${fmt(shortfall)} blks not inoculated last week · `}
                                             <strong>{`+${fmt(inocAdj)} carry-over applied`}</strong>
                                           </p>
                                           <button onClick={()=>applyInocWeekAdjust(sp.id,-inocAdj)}
@@ -3821,28 +3599,20 @@ function App() {
                                         </div>
                                       );
                                     }
-                                    const question = `You logged ${fmt(lastWeekLogged)} blocks last week but the target was ${fmt(lastWeekTarget)}. Add ${fmt(shortfall)} catch-up blocks to this week's targets?`;
+                                    const question = `You inoculated ${fmt(lastWeekLogged)} blocks last week but the target was ~${fmt(lastWeekTarget)}. Add ${fmt(shortfall)} catch-up blocks to this week's target?`;
                                     return(
                                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                                        <p style={{margin:0,fontSize:9,color:"#e07b8a"}}>{`↓ ${fmt(shortfall)} blks missed last week`}</p>
-                                        <button onClick={e=>{e.stopPropagation();setInocAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:shortfall,label:`+${fmt(shortfall)} catch-up`,question});}}
-                                          style={{...S.btn("#5a2a5a"),padding:"1px 7px",fontSize:9}}>+ Add to this week</button>
+                                        <p style={{margin:0,fontSize:9,color:"#e07b8a"}}>
+                                          {`↓ ${fmt(shortfall)} blks not inoculated last week`}
+                                        </p>
+                                        <button
+                                          onClick={e=>{e.stopPropagation();setInocAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:shortfall,label:`+${fmt(shortfall)} catch-up`,question});}}
+                                          style={{...S.btn("#5a2a5a"),padding:"1px 7px",fontSize:9}}>
+                                          + Add to this week
+                                        </button>
                                       </div>
                                     );
                                   })()}
-                                  {inocAutoCarry&&inocAdj>0&&(
-                                    <p style={{margin:"0 0 2px",fontSize:9,color:"#a78bda"}}>🔁 +{fmt(inocAdj)} auto carry-over applied</p>
-                                  )}
-                                  {remainder>0&&(
-                                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                                      {dismissed>0
-                                        ? <button onClick={()=>undoDismissRemainder(sp.id,'block')}
-                                            style={{...S.btn("#3a2a5a"),padding:"1px 7px",fontSize:9}}>↩ Undo dismiss</button>
-                                        : <button onClick={e=>{e.stopPropagation();setInocDismissConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,remainder,type:'block'});}}
-                                            style={{...S.btn("#2a1a3a"),border:"1px solid #a78bda55",padding:"1px 7px",fontSize:9}}>✕ Dismiss remainder</button>
-                                      }
-                                    </div>
-                                  )}
                                 </div>
                               );
                             })()}
@@ -5360,7 +5130,6 @@ function App() {
                         substitutions, fruitingRoom,
                         fruitLoaded: JSON.parse(_ls.getItem('mfp_fruitLoaded')||'{}'),
                         inocWeekAdjust: JSON.parse(_ls.getItem('mfp_inocWeekAdjust')||'{}'),
-                        inocDismissed: JSON.parse(_ls.getItem('mfp_inocDismissed')||'{}'),
                       }
                     };
                     const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
@@ -5407,7 +5176,6 @@ function App() {
                           if(d.fruitingRoom)     setFruitingRoom(d.fruitingRoom);
                           if(d.fruitLoaded)      { try{_ls.setItem('mfp_fruitLoaded',JSON.stringify(d.fruitLoaded));}catch(e){} }
                           if(d.inocWeekAdjust)   setInocWeekAdjust(d.inocWeekAdjust);
-                          if(d.inocDismissed)    setInocDismissed(d.inocDismissed);
                           alert("✅ Backup restored successfully!");
                         } catch(err) {
                           alert("Failed to read backup file. Make sure it's a valid Mushroom Farm Planner backup.");
@@ -5461,7 +5229,6 @@ function App() {
                       setSubstitutions([]);
                       _ls.removeItem('mfp_substitutions');
                       setInocWeekAdjust({});
-                      setInocDismissed({});
                     }
                   }
                 }} style={S.btn("#5a2a2a")}>Reset Everything</button>
