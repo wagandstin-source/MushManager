@@ -1024,13 +1024,10 @@ function App() {
 
   const coverageWeeks = useMemo(()=>{
     const cov = {};
-    // blockByWeek[w] = lbs of inventory harvesting in that week relative to today's blocks:
-    //   w=0 → same harvest week as blocks made today (harvest week)
-    //   w=1 → harvest week + 1
-    //   w=2 → harvest week + 2
     species.forEach(sp => { cov[sp.id] = { blockByWeek:[0,0,0], spawnByWeek:[0,0,0] }; });
 
     const today = new Date(); today.setHours(0,0,0,0);
+    const fruitingRoomIds = new Set((fruitingRoom||[]).map(e=>e.srcId).filter(Boolean));
 
     tracker.filter(e => !e.entryClass && (e.qty||0)>0 && (e.type==='block'||e.type==='spawn'))
     .forEach(entry => {
@@ -1041,17 +1038,13 @@ function App() {
       const daysFromToday = Math.round((inocDate - today) / (24*60*60*1000));
 
       if(entry.type==='block') {
+        if(fruitingRoomIds.has(entry.id)) return;
         const incubDays = getBlockIncubDays(sp);
         const harvestDays = daysFromToday + incubDays + sp.fruitDays;
         const refDays = incubDays + sp.fruitDays;
-        // Which harvest week does this batch land in, relative to today's blocks?
         const week = Math.round((harvestDays - refDays) / 7);
-        // Blocks ready before or during a window can cover that window and any later window
-        // So add to the earliest window they can cover (week or 0, whichever is later)
-        const startWindow = Math.max(0, week);
-        if(startWindow > 2) return; // too far out
-        // Add to startWindow — surplus carry in applyOffset handles later windows
-        cov[sp.id].blockByWeek[startWindow] = r2(cov[sp.id].blockByWeek[startWindow] + r2(qty * sp.blockDivisor));
+        if(week < 0 || week > 2) return;
+        cov[sp.id].blockByWeek[week] = r2(cov[sp.id].blockByWeek[week] + r2(qty * sp.blockDivisor));
 
       } else if(entry.type==='spawn') {
         const spawnDays = sp.spawnDays ?? (sp.spawnWeeks * 7);
@@ -1059,13 +1052,12 @@ function App() {
         const harvestDays = daysFromToday + spawnDays + incubDays + sp.fruitDays;
         const refDays = spawnDays + incubDays + sp.fruitDays;
         const week = Math.round((harvestDays - refDays) / 7);
-        const startWindow = Math.max(0, week);
-        if(startWindow > 2) return;
-        cov[sp.id].spawnByWeek[startWindow] = r2(cov[sp.id].spawnByWeek[startWindow] + r2(qty * getSpawnBagBlocks(sp) * sp.blockDivisor));
+        if(week < 0 || week > 2) return;
+        cov[sp.id].spawnByWeek[week] = r2(cov[sp.id].spawnByWeek[week] + r2(qty * getSpawnBagBlocks(sp) * sp.blockDivisor));
       }
     });
     return cov;
-  },[tracker,species,schedule]);
+  },[tracker,species,schedule,fruitingRoom]);
 
   function applyOffset(lbs1, lbs2, lbs3, byWeek) {
     // lbs1/2/3 = projected lbs demand for harvest week, harvest week+1, harvest week+2
