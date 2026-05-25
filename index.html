@@ -1336,24 +1336,30 @@ function App() {
     }
 
     return activeSpecies.map(sp=>{
+      const spawnDays = sp.spawnDays ?? (sp.spawnWeeks * 7);
+      const spawnWeekOffset = Math.round(spawnDays / 7); // how many weeks ahead spawn is relative to block
+
       const thisRow  = getBankRow(sp, 0);
       const lastRow  = getBankRow(sp, -1);
       const next1Row = getBankRow(sp, 1);
       const next2Row = getBankRow(sp, 2);
 
-      const inocAdj = inocWeekAdjust[sp.id]?.[getInocWeekKey()]||0;
-      const blockCarryAdj = -lastRow.blockBalance; // last week's shortfall adds, surplus reduces
-      const spawnCarryAdj = -lastRow.spawnBalance;
-      // Only last week's carry affects this week — positives reduce, negatives add
-      const effectiveBlockCarry = blockCarryAdj; // negative balance = shortage = more to do
-      const effectiveSpawnCarry = spawnCarryAdj;
+      // Spawn rows are offset further ahead — spawn inoc this week = block row w=spawnWeekOffset
+      const spawnThis  = getBankRow(sp, spawnWeekOffset);
+      const spawnLast  = getBankRow(sp, spawnWeekOffset - 1);
+      const spawnNext1 = getBankRow(sp, spawnWeekOffset + 1);
+      const spawnNext2 = getBankRow(sp, spawnWeekOffset + 2);
 
-      const bk1 = r2(Math.max(0, (thisRow.demandBlocks - thisRow.blocksLogged) + effectiveBlockCarry));
+      const inocAdj = inocWeekAdjust[sp.id]?.[getInocWeekKey()]||0;
+      const blockCarryAdj = -lastRow.blockBalance;
+      const spawnCarryAdj = -spawnLast.spawnBalance;
+
+      const bk1 = r2(Math.max(0, (thisRow.demandBlocks - thisRow.blocksLogged) + blockCarryAdj));
       const bk2 = r2(bk1 + next1Row.demandBlocks);
       const bk3 = r2(bk2 + next2Row.demandBlocks);
-      const sb1 = r2(Math.max(0, (thisRow.demandSpawn - thisRow.spawnLogged) + effectiveSpawnCarry));
-      const sb2 = r2(sb1 + next1Row.demandSpawn);
-      const sb3 = r2(sb2 + next2Row.demandSpawn);
+      const sb1 = r2(Math.max(0, (spawnThis.demandSpawn - spawnThis.spawnLogged) + spawnCarryAdj));
+      const sb2 = r2(sb1 + spawnNext1.demandSpawn);
+      const sb3 = r2(sb2 + spawnNext2.demandSpawn);
 
       return{...sp,
         blocks1:r2(bk1+inocAdj), blocks2:r2(bk2+inocAdj), blocks3:r2(bk3+inocAdj),
