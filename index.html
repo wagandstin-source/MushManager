@@ -333,9 +333,6 @@ function App() {
   const [inocWeekAdjust, setInocWeekAdjustRaw] = useState(()=>load('inocWeekAdjust', {}));
   function setInocWeekAdjust(v){const val=typeof v==='function'?v(inocWeekAdjust):v;setInocWeekAdjustRaw(val);save('inocWeekAdjust',val);}
   const [inocAdjustConfirm, setInocAdjustConfirm] = useState(null);
-  // inocAutoCarry: bool — auto-add last week's shortfall to this week without prompt
-  const [inocAutoCarry, setInocAutoCarryRaw] = useState(()=>load('inocAutoCarry', false));
-  function setInocAutoCarry(v){const val=typeof v==='function'?v(inocAutoCarry):v;setInocAutoCarryRaw(val);save('inocAutoCarry',val);}
   // simDate: string (YYYY-MM-DD) or null — date simulation mode
   const [simDate, setSimDate] = useState(null);
   const [showSimPicker, setShowSimPicker] = useState(false);
@@ -840,12 +837,12 @@ function App() {
   const sheetRows=(rows)=>rows.map((row,ri)=>(
     <tr key={row.key} style={S.row(ri)}>
       <td style={S.tdl}>{row.label}</td>
-      {activeSpecies.map(sp=>(
+      {patchedActiveSpecies.map(sp=>(
         <td key={sp.id} style={row.isText?{...S.td,color:"#a8c890",fontSize:11}:S.tdn(sp[row.key]>0?row.color:"#2d4a2d",!sp[row.key])}>
           {row.isText?sp[row.key]:(sp[row.key]>0?fmt(sp[row.key]):"—")}
         </td>
       ))}
-      <td style={S.tdn(row.isText?"#3a5a3a":"#d4e8c2")}>{row.isText?"":fmt(activeSpecies.reduce((s,sp)=>s+(sp[row.key]||0),0))}</td>
+      <td style={S.tdn(row.isText?"#3a5a3a":"#d4e8c2")}>{row.isText?"":fmt(patchedActiveSpecies.reduce((s,sp)=>s+(sp[row.key]||0),0))}</td>
     </tr>
   ));
 
@@ -1043,8 +1040,22 @@ function App() {
         const harvestDays = daysFromToday + incubDays + sp.fruitDays;
         const refDays = incubDays + sp.fruitDays;
         const week = Math.round((harvestDays - refDays) / 7);
-        if(week < 0 || week > 2) return;
-        cov[sp.id].blockByWeek[week] = r2(cov[sp.id].blockByWeek[week] + r2(qty * sp.blockDivisor));
+        // Block is available once incubation is complete (ready to fruit)
+        // If incubation done but past ideal window, count in window 0 (sitting in fridge)
+        // If incubation not done and already past window, skip (can't help this window)
+        // If incubation not done and in future window, count there
+        const incubComplete = (daysFromToday + incubDays) <= 0;
+        let w;
+        if(incubComplete) {
+          w = 0; // ready now — available for window 0 and surplus carries forward
+        } else if(week < 0) {
+          return; // not ready yet and already past — can't cover any window
+        } else if(week > 2) {
+          return; // too far out
+        } else {
+          w = week;
+        }
+        cov[sp.id].blockByWeek[w] = r2(cov[sp.id].blockByWeek[w] + r2(qty * sp.blockDivisor));
 
       } else if(entry.type==='spawn') {
         const spawnDays = sp.spawnDays ?? (sp.spawnWeeks * 7);
@@ -1052,8 +1063,18 @@ function App() {
         const harvestDays = daysFromToday + spawnDays + incubDays + sp.fruitDays;
         const refDays = spawnDays + incubDays + sp.fruitDays;
         const week = Math.round((harvestDays - refDays) / 7);
-        if(week < 0 || week > 2) return;
-        cov[sp.id].spawnByWeek[week] = r2(cov[sp.id].spawnByWeek[week] + r2(qty * getSpawnBagBlocks(sp) * sp.blockDivisor));
+        const spawnComplete = (daysFromToday + spawnDays) <= 0;
+        let w;
+        if(spawnComplete) {
+          w = 0;
+        } else if(week < 0) {
+          return;
+        } else if(week > 2) {
+          return;
+        } else {
+          w = week;
+        }
+        cov[sp.id].spawnByWeek[w] = r2(cov[sp.id].spawnByWeek[w] + r2(qty * getSpawnBagBlocks(sp) * sp.blockDivisor));
       }
     });
     return cov;
@@ -1079,6 +1100,114 @@ function App() {
     }
     return remainLbs;
   }
+
+
+  // ── New Bank: per-species, per-harvest-week surplus/shortage ─────────────
+  const bankWeeks = useMemo(()=>{
+    const today = new Date(); today.setHours(0,0,0,0);
+    const todayMult = getSeasonal(0, seasonal);
+    const weekStartDay = schedule.weekStartDay ?? 1; // Monday default
+
+    // Snap a date to the start of its calendar week
+    function snapToWeekStart(d) {
+      const dow = d.getDay(); // 0=Sun
+      const daysBack = (dow - weekStartDay + 7) % 7;
+      const snapped = new Date(d);
+      snapped.setDate(d.getDate() - daysBack);
+      return snapped;
+    }
+
+    // Get this week's start (Monday)
+    const thisWeekStart = snapToWeekStart(today);
+
+    return species.map(sp=>{
+      const incubDays = getBlockIncubDays(sp);
+      const fruitDays = sp.fruitDays;
+      const refDays = incubDays + fruitDays;
+      const spawnDays = sp.spawnDays ?? (sp.spawnWeeks * 7);
+
+      // Get blocks or spawn logged in a specific calendar week (Mon-Sun)
+      const getLogged = (weekStartDate, type) => {
+        const startStr = weekStartDate.toISOString().slice(0,10);
+        const end = new Date(weekStartDate); end.setDate(weekStartDate.getDate() + 7);
+        const endStr = end.toISOString().slice(0,10);
+        return r2(tracker
+          .filter(e => (e.speciesId||e.sid)===sp.id && e.type===type
+            && !e.entryClass && e.date >= startStr && e.date < endStr)
+          .reduce((a,e)=>a+(parseFloat(e.qty)||0), 0));
+      };
+
+      // Total week span from spawn inoc to block inoc for this week
+      const totalWeekSpan = Math.ceil((refDays + spawnDays) / 7);
+
+      const weeks = [];
+      for(let w = -totalWeekSpan; w <= 2; w++){
+        // Block inoculation week = thisWeekStart + w*7
+        const blockInocWeekStart = new Date(thisWeekStart);
+        blockInocWeekStart.setDate(thisWeekStart.getDate() + w*7);
+        const blockInocLabel = blockInocWeekStart.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+
+        // Harvest week = block inoc week + incubDays + fruitDays, snapped to week start
+        const harvestDateRaw = new Date(blockInocWeekStart);
+        harvestDateRaw.setDate(blockInocWeekStart.getDate() + incubDays + fruitDays);
+        const harvestWeekStart = snapToWeekStart(harvestDateRaw);
+        const harvestLabel = harvestWeekStart.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+        const isPast = harvestWeekStart < thisWeekStart;
+
+        // Spawn inoculation week = block inoc week - spawnDays, snapped
+        const spawnInocWeekStart = new Date(blockInocWeekStart);
+        spawnInocWeekStart.setDate(blockInocWeekStart.getDate() - spawnDays);
+        const spawnInocWeekSnapped = snapToWeekStart(spawnInocWeekStart);
+        const spawnInocLabel = spawnInocWeekSnapped.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+
+        // Demand (seasonal offset based on weeks from today to harvest)
+        const weekOffset = Math.round((harvestWeekStart - today) / (7*86400000));
+        let rawLbs = 0;
+        clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
+        const mult = getSeasonal(weekOffset, seasonal);
+        const projLbs = rawLbs>0 && todayMult>0 ? r2(rawLbs*(mult/todayMult)) : 0;
+        const extraLbs = extraDemand[weekOffset]?.[sp.id]||0;
+        const demandBlocks = r2((projLbs + extraLbs) / sp.blockDivisor);
+        const demandSpawn = r2(demandBlocks / getSpawnBagBlocks(sp));
+
+        const blocksLogged = getLogged(blockInocWeekStart, 'block');
+        const spawnLogged = getLogged(spawnInocWeekSnapped, 'spawn');
+
+        const blockBalance = r2(blocksLogged - demandBlocks);
+        const spawnBalance = r2(spawnLogged - demandSpawn);
+
+        weeks.push({
+          w, harvestLabel, isPast,
+          blockInocLabel,
+          spawnInocLabel,
+          demandBlocks, demandSpawn,
+          blocksLogged, spawnLogged,
+          blockBalance, spawnBalance,
+        });
+      }
+
+      // Calculate carry: positives accumulate and absorb negatives going forward
+      let blockCarry = 0;
+      let spawnCarry = 0;
+      const weeksWithCarry = weeks.map(wk => {
+        // Apply carry to this week
+        blockCarry = r2(blockCarry + wk.blockBalance);
+        spawnCarry = r2(spawnCarry + wk.spawnBalance);
+        // Carry can't go below zero — negatives don't carry forward
+        const blockCarryVal = blockCarry;
+        const spawnCarryVal = spawnCarry;
+        if(blockCarry < 0) blockCarry = 0;
+        if(spawnCarry < 0) spawnCarry = 0;
+        return { ...wk, blockCarryVal, spawnCarryVal };
+      });
+
+      let rawLbs = 0;
+      clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
+      const hasShortage = weeksWithCarry.some(wk=>wk.blockCarryVal < 0 || wk.spawnCarryVal < 0);
+
+      return { sp, weeks: weeksWithCarry, hasShortage, hasData: rawLbs > 0 };
+    }).filter(b=>b.hasData);
+  },[species,tracker,orders,clients,seasonal,extraDemand,schedule]);
 
   const activeSpecies = useMemo(()=>{
     // Calculate how many blocks are being substituted into/out of fruiting room per species
@@ -1112,16 +1241,14 @@ function App() {
         const cov = coverageWeeks[sp.id]||{blockByWeek:[0,0,0],spawnByWeek:[0,0,0]};
 
         // applyOffset returns per-week remaining lbs for each harvest week
-        // Display values are cumulative: 2wk = total to make to be covered for 2 weeks ahead
         const [bl1,bl2,bl3] = applyOffset(sp.blockLbs, sp.blockLbs2, sp.blockLbs3, cov.blockByWeek);
-        const bk1 = r2(bl1 / sp.blockDivisor);
-        const bk2 = r2((bl1 + bl2) / sp.blockDivisor);
-        const bk3 = r2((bl1 + bl2 + bl3) / sp.blockDivisor);
-
         const [sl1,sl2,sl3] = applyOffset(sp.spawnLbs, sp.spawnLbs2, sp.spawnLbs3, cov.spawnByWeek);
+        const bk1 = r2(bl1 / sp.blockDivisor);
+        const bk2 = r2((bl1+bl2) / sp.blockDivisor);
+        const bk3 = r2((bl1+bl2+bl3) / sp.blockDivisor);
         const sb1 = r2((sl1 / sp.blockDivisor) / getSpawnBagBlocks(sp));
-        const sb2 = r2(((sl1 + sl2) / sp.blockDivisor) / getSpawnBagBlocks(sp));
-        const sb3 = r2(((sl1 + sl2 + sl3) / sp.blockDivisor) / getSpawnBagBlocks(sp));
+        const sb2 = r2(((sl1+sl2) / sp.blockDivisor) / getSpawnBagBlocks(sp));
+        const sb3 = r2(((sl1+sl2+sl3) / sp.blockDivisor) / getSpawnBagBlocks(sp));
         const fruitLoadedAmt = getFruitLoaded(sp.id);
         // Adjust fruiting room loading by substitutions only — don't subtract already loaded
         // The target always reflects full weekly demand; fruitLoadedAmt shown as progress
@@ -1156,38 +1283,86 @@ function App() {
       });
   },[thisWeek,coverageWeeks,fruitLoaded,fruitWeekAdjust,inocWeekAdjust,schedule,substitutions,tracker,species]);
 
-  // Auto carry-over: when switch is on, apply last week's shortfall to this week for each species
-  useEffect(()=>{
-    if(!inocAutoCarry || activeSpecies.length === 0) return;
-    const resetDay = schedule.blockDay ?? 4;
-    const today = simDate ? new Date(simDate+'T12:00:00') : new Date(); today.setHours(0,0,0,0);
-    const js_dow = today.getDay();
-    const daysBack = (js_dow - resetDay + 7) % 7;
-    const thisStart = new Date(today); thisStart.setDate(today.getDate() - daysBack);
-    const lastStart = new Date(thisStart); lastStart.setDate(thisStart.getDate() - 7);
-    const thisKey = thisStart.toISOString().slice(0,10);
-    const lastKey = lastStart.toISOString().slice(0,10);
-    const lastEnd = thisKey;
+  // Patch activeSpecies blocks1/2/3 using bank logic computed inline
+  const patchedActiveSpecies = useMemo(()=>{
+    const today = new Date(); today.setHours(0,0,0,0);
+    const weekStartDay = schedule.weekStartDay ?? 1;
+    const todayMult = getSeasonal(0, seasonal);
 
-    activeSpecies.forEach(sp=>{
-      const lastWeekLogged = r2(tracker
-        .filter(e => e.type==='block' && e.speciesId===sp.id && e.date>=lastKey && e.date<lastEnd)
+    function snapToWeekStart(d) {
+      const js_dow = (d.getDay());
+      // Convert to offset from weekStartDay
+      const daysBack = ((js_dow - weekStartDay + 7) % 7);
+      const s = new Date(d); s.setDate(d.getDate() - daysBack);
+      return s;
+    }
+    const thisWeekStart = snapToWeekStart(today);
+
+    function getLogged(weekStartDate, type, spId) {
+      const startStr = weekStartDate.toISOString().slice(0,10);
+      const end = new Date(weekStartDate); end.setDate(weekStartDate.getDate() + 7);
+      const endStr = end.toISOString().slice(0,10);
+      return r2(tracker
+        .filter(e => (e.speciesId||e.sid)===spId && e.type===type
+          && !e.entryClass && e.date >= startStr && e.date < endStr)
         .reduce((a,e)=>a+(parseFloat(e.qty)||0), 0));
-      const lastWeekAdj = r2(inocWeekAdjust[sp.id]?.[lastKey]||0);
-      const lastWeekDismissed = r2(inocDismissed[sp.id+'_block']?.[lastKey]||0);
-      const currentAdj = r2(inocWeekAdjust[sp.id]?.[thisKey]||0);
-      const baseBlocks1 = r2(sp.blocks1 - currentAdj);
-      const lastWeekTarget = r2(baseBlocks1 + lastWeekAdj);
-      const shortfall = r2(Math.max(0, lastWeekTarget - lastWeekLogged - lastWeekDismissed));
-      if(shortfall > 0 && currentAdj !== shortfall) {
-        setInocWeekAdjust(prev=>({...prev,[sp.id]:{...(prev[sp.id]||{}),[thisKey]:shortfall}}));
-      } else if(shortfall === 0 && currentAdj > 0) {
-        setInocWeekAdjust(prev=>({...prev,[sp.id]:{...(prev[sp.id]||{}),[thisKey]:0}}));
-      }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[inocAutoCarry, activeSpecies, tracker, schedule.blockDay, inocWeekAdjust, inocDismissed, simDate]);
+    }
 
+    function getBankRow(sp, w) {
+      const incubDays = getBlockIncubDays(sp);
+      const fruitDays = sp.fruitDays;
+      const spawnDays = sp.spawnDays ?? (sp.spawnWeeks * 7);
+
+      const blockInocWeekStart = new Date(thisWeekStart);
+      blockInocWeekStart.setDate(thisWeekStart.getDate() + w*7);
+
+      const harvestDateRaw = new Date(blockInocWeekStart);
+      harvestDateRaw.setDate(blockInocWeekStart.getDate() + incubDays + fruitDays);
+      const harvestWeekStart = snapToWeekStart(harvestDateRaw);
+
+      const weekOffset = Math.round((harvestWeekStart - today) / (7*86400000));
+      let rawLbs = 0;
+      clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
+      const mult = getSeasonal(weekOffset, seasonal);
+      const projLbs = rawLbs>0 && todayMult>0 ? r2(rawLbs*(mult/todayMult)) : 0;
+      const extraLbs = extraDemand[weekOffset]?.[sp.id]||0;
+      const demandBlocks = r2((projLbs + extraLbs) / sp.blockDivisor);
+      const demandSpawn = r2(demandBlocks / getSpawnBagBlocks(sp));
+      const blocksLogged = getLogged(blockInocWeekStart, 'block', sp.id);
+      const spawnLogged = getLogged(snapToWeekStart(new Date(blockInocWeekStart.getTime() - spawnDays*86400000)), 'spawn', sp.id);
+
+      return { demandBlocks, demandSpawn, blocksLogged, spawnLogged,
+               blockBalance: r2(blocksLogged-demandBlocks), spawnBalance: r2(spawnLogged-demandSpawn) };
+    }
+
+    return activeSpecies.map(sp=>{
+      const thisRow  = getBankRow(sp, 0);
+      const lastRow  = getBankRow(sp, -1);
+      const next1Row = getBankRow(sp, 1);
+      const next2Row = getBankRow(sp, 2);
+
+      const inocAdj = inocWeekAdjust[sp.id]?.[getInocWeekKey()]||0;
+      const blockCarryAdj = -lastRow.blockBalance; // last week's shortfall adds, surplus reduces
+      const spawnCarryAdj = -lastRow.spawnBalance;
+      // Only last week's carry affects this week — positives reduce, negatives add
+      const effectiveBlockCarry = blockCarryAdj; // negative balance = shortage = more to do
+      const effectiveSpawnCarry = spawnCarryAdj;
+
+      const bk1 = r2(Math.max(0, (thisRow.demandBlocks - thisRow.blocksLogged) + effectiveBlockCarry));
+      const bk2 = r2(bk1 + next1Row.demandBlocks);
+      const bk3 = r2(bk2 + next2Row.demandBlocks);
+      const sb1 = r2(Math.max(0, (thisRow.demandSpawn - thisRow.spawnLogged) + effectiveSpawnCarry));
+      const sb2 = r2(sb1 + next1Row.demandSpawn);
+      const sb3 = r2(sb2 + next2Row.demandSpawn);
+
+      return{...sp,
+        blocks1:r2(bk1+inocAdj), blocks2:r2(bk2+inocAdj), blocks3:r2(bk3+inocAdj),
+        spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
+      };
+    });
+  },[activeSpecies, tracker, orders, clients, seasonal, extraDemand, schedule, inocWeekAdjust]);
+
+  // Auto carry-over: when switch is on, apply last week's shortfall to this week for each species
   // ── Full capacity simulation — projects room occupancy including planned inoculations ──
   const capacitySimulation = useMemo(()=>{
     const incubCap = schedule.incubationCapacity||200;
@@ -1300,7 +1475,8 @@ function App() {
     });
   },[orders,species,clients,seasonal,tracker,extraDemand,thisWeek,liveItems]);
 
-  // ── Simple Bank: blocks/spawn in hand vs needed this week ─────────────────
+
+  const [bankExpanded, setBankExpanded] = useState({});
   const simplBank = useMemo(()=>{
     const result = {};
     species.forEach(sp => {
@@ -3601,19 +3777,19 @@ function App() {
         {activeTab==="sheet"&&(
           <div>
             <div style={S.box()}><p style={{margin:0,fontSize:12,color:"#a8c890"}}>Seasonally adjusted.{upcoming.length>0&&<span style={{color:"#f4d06f"}}> ⚡ {upcoming.length} upcoming item(s) included.</span>}</p></div>
-            {activeSpecies.length===0&&<div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered — go to 📋 Orders first.</div>}
-            {activeSpecies.length>0&&(
+            {patchedActiveSpecies.length===0&&<div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered — go to 📋 Orders first.</div>}
+            {patchedActiveSpecies.length>0&&(
               <div style={{...S.card,overflowX:"auto"}}>
                 <table style={{borderCollapse:"collapse",width:"100%",minWidth:400}}>
-                  <thead><tr><th style={S.thL}>This week</th>{activeSpecies.map(sp=><th key={sp.id} style={S.th(sp.color)}>{sp.name}{sp.hasUpcoming&&<span style={{color:"#f4d06f",fontSize:9}}> ⚡</span>}</th>)}<th style={S.th("#d4e8c2")}>Total</th></tr></thead>
+                  <thead><tr><th style={S.thL}>This week</th>{patchedActiveSpecies.map(sp=><th key={sp.id} style={S.th(sp.color)}>{sp.name}{sp.hasUpcoming&&<span style={{color:"#f4d06f",fontSize:9}}> ⚡</span>}</th>)}<th style={S.th("#d4e8c2")}>Total</th></tr></thead>
                   <tbody>
-                    <tr style={{background:"#0e1e10"}}><td colSpan={activeSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#e8a87c",fontWeight:"bold",letterSpacing:1}}>🌾 SPAWN BAGS TO MAKE THIS WEEK</td></tr>
+                    <tr style={{background:"#0e1e10"}}><td colSpan={patchedActiveSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#e8a87c",fontWeight:"bold",letterSpacing:1}}>🌾 SPAWN BAGS TO MAKE THIS WEEK</td></tr>
                     {sheetRows([{label:"Harvest week",key:"spawnHarvestLabel",isText:true},{label:"Projected lbs",key:"spawnLbs",color:"#d4e8c2"},{label:"Spawn bags – 1wk",key:"spawnBags1",color:"#e8a87c"},{label:"Spawn bags – 2wk",key:"spawnBags2",color:"#e8a87c"},{label:"Spawn bags – 3wk",key:"spawnBags3",color:"#e8a87c"}])}
-                    <tr style={{background:"#0e1018"}}><td colSpan={activeSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#a78bda",fontWeight:"bold",letterSpacing:1}}>🧱 BLOCKS TO INOCULATE THIS WEEK</td></tr>
-                    <tr style={{background:"#0c0c18"}}><td style={{...S.tdl,color:"#3a3a5a",fontSize:9}}>Species</td>{activeSpecies.map(sp=><td key={sp.id} style={{...S.td,color:sp.color,fontWeight:"bold",fontSize:11}}>{sp.name}</td>)}<td/></tr>
+                    <tr style={{background:"#0e1018"}}><td colSpan={patchedActiveSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#a78bda",fontWeight:"bold",letterSpacing:1}}>🧱 BLOCKS TO INOCULATE THIS WEEK</td></tr>
+                    <tr style={{background:"#0c0c18"}}><td style={{...S.tdl,color:"#3a3a5a",fontSize:9}}>Species</td>{patchedActiveSpecies.map(sp=><td key={sp.id} style={{...S.td,color:sp.color,fontWeight:"bold",fontSize:11}}>{sp.name}</td>)}<td/></tr>
                     {sheetRows([{label:"Harvest week",key:"blockHarvestLabel",isText:true},{label:"Projected lbs",key:"blockLbs",color:"#d4e8c2"},{label:"Blocks – 1wk",key:"blocks1",color:"#a78bda"},{label:"Blocks – 2wk",key:"blocks2",color:"#a78bda"},{label:"Blocks – 3wk",key:"blocks3",color:"#a78bda"}])}
-                    <tr style={{background:"#0e180e"}}><td colSpan={activeSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#7ec8a0",fontWeight:"bold",letterSpacing:1}}>🚪 BLOCKS TO LOAD INTO FRUITING ROOM</td></tr>
-                    <tr style={{background:"#0c180c"}}><td style={{...S.tdl,color:"#3a5a3a",fontSize:9}}>Species</td>{activeSpecies.map(sp=><td key={sp.id} style={{...S.td,color:sp.color,fontWeight:"bold",fontSize:11}}>{sp.name}</td>)}<td/></tr>
+                    <tr style={{background:"#0e180e"}}><td colSpan={patchedActiveSpecies.length+2} style={{padding:"5px 8px",fontSize:10,color:"#7ec8a0",fontWeight:"bold",letterSpacing:1}}>🚪 BLOCKS TO LOAD INTO FRUITING ROOM</td></tr>
+                    <tr style={{background:"#0c180c"}}><td style={{...S.tdl,color:"#3a5a3a",fontSize:9}}>Species</td>{patchedActiveSpecies.map(sp=><td key={sp.id} style={{...S.td,color:sp.color,fontWeight:"bold",fontSize:11}}>{sp.name}</td>)}<td/></tr>
                     {sheetRows([{label:"Harvest date",key:"fruitHarvestLabel",isText:true},{label:"Projected lbs",key:"fruitLbs",color:"#d4e8c2"},{label:"Blocks to load",key:"fruitBlocks",color:"#7ec8a0"}])}
                   </tbody>
                 </table>
@@ -3625,19 +3801,8 @@ function App() {
         {/* ── TASKS ────────────────────────────────────────────────────────── */}
         {activeTab==="thisweek"&&(
           <div>
-            {/* Auto carry-over switch */}
-            <div style={{...S.card,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",marginBottom:8}}>
-              <div>
-                <p style={{margin:0,fontSize:12,fontWeight:"bold",color:"#a78bda"}}>🔁 Auto carry-over missed inoculation</p>
-                <p style={{margin:"2px 0 0",fontSize:10,color:"#5a8a5a"}}>Automatically adds last week's missed blocks & spawn to this week's targets</p>
-              </div>
-              <div onClick={()=>setInocAutoCarry(p=>!p)}
-                style={{width:42,height:24,borderRadius:12,background:inocAutoCarry?"#7c4dbd":"#2a2a2a",border:`1px solid ${inocAutoCarry?"#a78bda":"#3a3a3a"}`,cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}>
-                <div style={{position:"absolute",top:3,left:inocAutoCarry?20:3,width:16,height:16,borderRadius:"50%",background:inocAutoCarry?"#d4b8f0":"#5a5a5a",transition:"left 0.2s"}}/>
-              </div>
-            </div>
-            {activeSpecies.length===0&&<div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered — go to 📋 Orders first.</div>}
-            {activeSpecies.map(sp=>{
+            {patchedActiveSpecies.length===0&&<div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered — go to 📋 Orders first.</div>}
+            {patchedActiveSpecies.map(sp=>{
               const isExpanded = expandedTaskSpecies[sp.id];
               const needsBlocks = (sp.blocks1||0) > 0;
               const needsSpawn = (sp.spawnBags1||0) > 0;
@@ -3784,14 +3949,15 @@ function App() {
                               const inocAdj = getInocWeekAdjust(sp.id);
                               const dismissed = getInocDismissed(sp.id, 'block');
                               const lastWeekLogged = getInocFromTracker(sp.id, -1);
-                              // Last week's adjusted target (base + whatever carry was applied last week)
                               const lastWeekKey = getInocWeekBounds(-1).start;
                               const lastWeekAdj = r2(inocWeekAdjust[sp.id]?.[lastWeekKey]||0);
                               const lastWeekDismissed = r2(inocDismissed[sp.id+'_block']?.[lastWeekKey]||0);
-                              const lastWeekTarget = r2((sp.blocks1 - inocAdj) + lastWeekAdj); // base target last week
+                              const lastWeekTarget = r2((sp.blocks1 - inocAdj) + lastWeekAdj);
                               const shortfall = r2(Math.max(0, lastWeekTarget - lastWeekLogged - lastWeekDismissed));
                               const hasShortfall = shortfall > 0;
                               const remainder = r2(Math.max(0, (sp.blocks1||0) - inocLoggedAmt - dismissed));
+                              // Last week's block balance (negative = shortage that was carried, positive = surplus that reduced)
+                              const lastWeekBlockBalance = r2(lastWeekLogged - lastWeekTarget);
                               return(
                                 <div style={{marginBottom:6}}>
                                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
@@ -3801,30 +3967,13 @@ function App() {
                                       {" · Resets "}{DAYS[schedule.blockDay??4]}
                                     </p>
                                   </div>
-                                  {hasShortfall&&!inocAutoCarry&&(()=>{
-                                    if(inocAdj!==0){
-                                      return(
-                                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                                          <p style={{margin:0,fontSize:9,color:"#e07b8a"}}>
-                                            {`↓ ${fmt(shortfall)} blks missed last week · `}
-                                            <strong>{`+${fmt(inocAdj)} carry-over applied`}</strong>
-                                          </p>
-                                          <button onClick={()=>applyInocWeekAdjust(sp.id,-inocAdj)}
-                                            style={{...S.btn("#3a2a1a"),padding:"1px 6px",fontSize:9}}>✕ Remove</button>
-                                        </div>
-                                      );
-                                    }
-                                    const question = `You logged ${fmt(lastWeekLogged)} blocks last week but the target was ${fmt(lastWeekTarget)}. Add ${fmt(shortfall)} catch-up blocks to this week's targets?`;
-                                    return(
-                                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                                        <p style={{margin:0,fontSize:9,color:"#e07b8a"}}>{`↓ ${fmt(shortfall)} blks missed last week`}</p>
-                                        <button onClick={e=>{e.stopPropagation();setInocAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:shortfall,label:`+${fmt(shortfall)} catch-up`,question});}}
-                                          style={{...S.btn("#5a2a5a"),padding:"1px 7px",fontSize:9}}>+ Add to this week</button>
-                                      </div>
-                                    );
-                                  })()}
-                                  {inocAutoCarry&&inocAdj>0&&(
-                                    <p style={{margin:"0 0 2px",fontSize:9,color:"#a78bda"}}>🔁 +{fmt(inocAdj)} auto carry-over applied</p>
+                                  {/* Carry indicator — shows what last week's balance contributed */}
+                                  {lastWeekBlockBalance !== 0 && (
+                                    <p style={{margin:"0 0 3px",fontSize:9,color:lastWeekBlockBalance<0?"#e07b8a":"#7ec8a0"}}>
+                                      {lastWeekBlockBalance<0
+                                        ? `↑ ${fmt(Math.abs(lastWeekBlockBalance))} carried from last week's shortage`
+                                        : `↓ ${fmt(lastWeekBlockBalance)} reduced from last week's surplus`}
+                                    </p>
                                   )}
                                   {remainder>0&&(
                                     <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
@@ -4091,50 +4240,84 @@ function App() {
               </div>
             )}
 
-            {/* Simple bank balances */}
-            <div style={S.box()}>
-              <p style={{margin:0,fontSize:12,color:"#a8c890"}}>
-                Blocks and spawn bags in hand vs what you need this week.
+            {/* New Bank: per-species harvest week surplus/shortage */}
+            <div style={{...S.box(),marginBottom:8}}>
+              <p style={{margin:0,fontSize:11,color:"#a8c890"}}>
+                Surplus/shortage per harvest week based on what was logged on each inoculation date.
                 <strong style={{color:"#7ec8a0"}}> Green = surplus</strong>,
-                <strong style={{color:"#e07b8a"}}> red = short</strong>.
+                <strong style={{color:"#e07b8a"}}> red = shortage</strong>.
               </p>
             </div>
-            {Object.values(simplBank).filter(b=>b.hasData).map(b=>(
-              <div key={b.sp.id} style={{...S.card,borderLeft:`4px solid ${b.sp.color}`}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-                  <h3 style={{margin:0,color:b.sp.color,fontSize:14}}>{b.sp.name}</h3>
-                  <span style={{fontSize:11,color:"#5a8a5a"}}>Weekly need: <strong style={{color:"#d4e8c2"}}>{fmt(b.weeklyBlocks)} blks · {fmt(b.weeklySpawn)} bags</strong></span>
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                  {[
-                    {label:"🧱 Blocks", inHand:b.inHandBlocks, incubating:b.incubatingBlocks, surplus:b.surplusBlocks, color:"#a78bda", incubDays:getBlockIncubDays(b.sp)},
-                    {label:"🌾 Spawn bags", inHand:b.inHandSpawn, incubating:b.incubatingSpawn, surplus:b.surplusSpawn, color:"#e8a87c", incubDays:b.sp.spawnDays??(b.sp.spawnWeeks*7)},
-                  ].map(row=>(
-                    <div key={row.label} style={{background:"#0c160c",borderRadius:8,padding:"10px 12px",border:"1px solid #2d4a2d"}}>
-                      <p style={{margin:"0 0 4px",fontSize:11,color:row.color,fontWeight:"bold"}}>{row.label}</p>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
-                        <span style={{fontSize:11,color:"#5a8a5a"}}>Ready: <strong style={{color:"#d4e8c2"}}>{fmt(row.inHand)||"0"}</strong></span>
-                        <span style={{fontSize:18,fontWeight:"bold",color:row.surplus>=0?"#7ec8a0":"#e07b8a"}}>
-                          {row.surplus>=0?"+":""}{fmt(row.surplus)||"0"}
-                        </span>
-                      </div>
-                      {row.incubating>0&&(
-                        <p style={{margin:"3px 0 0",fontSize:10,color:"#f4d06f"}}>
-                          🕐 {fmt(row.incubating)} incubating ({fmtDays(row.incubDays)} to ready)
-                        </p>
-                      )}
-                      <p style={{margin:"3px 0 0",fontSize:10,color:"#3a5a3a"}}>
-                        {row.surplus>=0
-                          ? `${Math.floor(row.surplus/b.weeklyBlocks*7) || 0}d extra coverage`
-                          : `${fmt(Math.abs(row.surplus))} short this week`}
-                      </p>
+            {bankWeeks.map(b=>{
+              const isOpen = !!bankExpanded[b.sp.id];
+              const overallColor = b.hasShortage ? "#e07b8a" : "#7ec8a0";
+              const overallIcon = b.hasShortage ? "⚠️" : "✓";
+              return(
+                <div key={b.sp.id} style={{...S.card,padding:0,overflow:"hidden",marginBottom:8}}>
+                  <div onClick={()=>setBankExpanded(p=>({...p,[b.sp.id]:!p[b.sp.id]}))}
+                    style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px",cursor:"pointer",background:"#0c160c"}}>
+                    <span style={{fontSize:12,fontWeight:"bold",color:b.sp.color,flex:1}}>{b.sp.name}</span>
+                    <span style={{fontSize:11,color:overallColor,fontWeight:"bold"}}>{overallIcon} {b.hasShortage?"Short some weeks":"All weeks covered"}</span>
+                    <span style={{fontSize:12,color:"#5a8a5a"}}>{isOpen?"▲":"▼"}</span>
+                  </div>
+                  {isOpen&&(
+                    <div style={{padding:"8px 10px 12px",overflowX:"auto"}}>
+                      <table style={{borderCollapse:"collapse",width:"100%",fontSize:10,minWidth:420}}>
+                        <thead>
+                          <tr style={{borderBottom:"1px solid #2d4a2d"}}>
+                            <th style={{...S.thL,fontSize:10,color:"#5a8a5a"}}>Harvest</th>
+                            <th style={{...S.thL,fontSize:10,color:"#a78bda"}}>🧱 Block inoc</th>
+                            <th style={{...S.th("#a78bda"),fontSize:10}}>Need</th>
+                            <th style={{...S.th("#a78bda"),fontSize:10}}>Done</th>
+                            <th style={{...S.th("#a78bda"),fontSize:10}}>Balance</th>
+                            <th style={{...S.th("#a78bda"),fontSize:10}}>Carry</th>
+                            <th style={{...S.thL,fontSize:10,color:"#e8a87c"}}>🌾 Spawn inoc</th>
+                            <th style={{...S.th("#e8a87c"),fontSize:10}}>Need</th>
+                            <th style={{...S.th("#e8a87c"),fontSize:10}}>Done</th>
+                            <th style={{...S.th("#e8a87c"),fontSize:10}}>Balance</th>
+                            <th style={{...S.th("#e8a87c"),fontSize:10}}>Carry</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {b.weeks.map(wk=>{
+                            const bColor = wk.blockBalance >= 0 ? "#7ec8a0" : "#e07b8a";
+                            const sColor = wk.spawnBalance >= 0 ? "#7ec8a0" : "#e07b8a";
+                            const bcColor = wk.blockCarryVal >= 0 ? "#a8c890" : "#e07b8a";
+                            const scColor = wk.spawnCarryVal >= 0 ? "#a8c890" : "#e07b8a";
+                            const rowBg = (wk.blockCarryVal < 0 || wk.spawnCarryVal < 0) ? "#1a0a0a" : "transparent";
+                            const blockCarryStr = wk.blockCarryVal < 0
+                              ? fmt(wk.blockCarryVal)
+                              : wk.blockCarryVal === 0 ? "covered"
+                              : "+"+fmt(wk.blockCarryVal);
+                            const spawnCarryStr = wk.spawnCarryVal < 0
+                              ? fmt(wk.spawnCarryVal)
+                              : wk.spawnCarryVal === 0 ? "covered"
+                              : "+"+fmt(wk.spawnCarryVal);
+                            return(
+                              <tr key={wk.w} style={{background:rowBg,borderBottom:"1px solid #1a2e1a"}}>
+                                <td style={{...S.td,textAlign:"left",color:"#a8c890",fontWeight:"bold",paddingLeft:4}}>{wk.harvestLabel}</td>
+                                <td style={{...S.td,textAlign:"left",color:"#a78bda",paddingLeft:4}}>{wk.blockInocLabel}</td>
+                                <td style={{...S.td,color:"#d4e8c2"}}>{fmt(wk.demandBlocks)}</td>
+                                <td style={{...S.td,color:"#a8c890"}}>{fmt(wk.blocksLogged)}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:bColor}}>{wk.blockBalance>=0?"+":""}{fmt(wk.blockBalance)}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:bcColor,fontSize:wk.blockCarryVal===0?9:10}}>{blockCarryStr}</td>
+                                <td style={{...S.td,textAlign:"left",color:"#e8a87c",paddingLeft:4}}>{wk.spawnInocLabel}</td>
+                                <td style={{...S.td,color:"#d4e8c2"}}>{fmt(wk.demandSpawn)}</td>
+                                <td style={{...S.td,color:"#a8c890"}}>{fmt(wk.spawnLogged)}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:sColor}}>{wk.spawnBalance>=0?"+":""}{fmt(wk.spawnBalance)}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:scColor,fontSize:wk.spawnCarryVal===0?9:10}}>{spawnCarryStr}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                  ))}
+                  )}
                 </div>
-              </div>
-            ))}
-            {Object.values(simplBank).every(b=>!b.hasData)&&(
-              <div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No inventory entries yet — log batches in the Inventory tab.</div>
+              );
+            })}
+            {bankWeeks.length===0&&(
+              <div style={{...S.card,textAlign:"center",color:"#5a8a5a"}}>No orders entered yet.</div>
             )}
 
             {/* 12-week capacity projection */}
