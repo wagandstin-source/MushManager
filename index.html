@@ -1330,12 +1330,17 @@ function App() {
       const blockCarryAdj = -lastRow.blockBalance;
       const spawnCarryAdj = -spawnLast.spawnBalance;
 
-      const bk1 = r2(Math.max(0, (thisRow.demandBlocks - thisRow.blocksLogged) + blockCarryAdj));
-      const bk2 = r2(bk1 + next1Row.demandBlocks);
-      const bk3 = r2(bk2 + next2Row.demandBlocks);
-      const sb1 = r2(Math.max(0, (spawnThis.demandSpawn - spawnThis.spawnLogged) + spawnCarryAdj));
-      const sb2 = r2(sb1 + spawnNext1.demandSpawn);
-      const sb3 = r2(sb2 + spawnNext2.demandSpawn);
+      const thisWeekRaw = r2((thisRow.demandBlocks - thisRow.blocksLogged) + blockCarryAdj);
+      const bk1 = r2(Math.max(0, thisWeekRaw));
+      const thisWeekSurplus = thisWeekRaw < 0 ? Math.abs(thisWeekRaw) : 0; // extra blocks beyond 1wk need
+      const bk2 = r2(Math.max(0, bk1 + next1Row.demandBlocks - thisWeekSurplus));
+      const bk3 = r2(Math.max(0, bk2 + next2Row.demandBlocks));
+
+      const spawnThisWeekRaw = r2((spawnThis.demandSpawn - spawnThis.spawnLogged) + spawnCarryAdj);
+      const sb1 = r2(Math.max(0, spawnThisWeekRaw));
+      const spawnThisWeekSurplus = spawnThisWeekRaw < 0 ? Math.abs(spawnThisWeekRaw) : 0;
+      const sb2 = r2(Math.max(0, sb1 + spawnNext1.demandSpawn - spawnThisWeekSurplus));
+      const sb3 = r2(Math.max(0, sb2 + spawnNext2.demandSpawn));
 
       return{...sp,
         blocks1:r2(bk1+inocAdj), blocks2:r2(bk2+inocAdj), blocks3:r2(bk3+inocAdj),
