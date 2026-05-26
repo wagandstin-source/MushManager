@@ -1632,7 +1632,7 @@ function App() {
   };
 
   const tabs=["today","sheet","thisweek","graph","bank","tracker","history","seasonal","setup","suppliers"];
-  const tabLabels={today:"📊 Dashboard",sheet:"📊 This Week",thisweek:"🌱 Tasks",graph:"📈 Forecast",bank:"🏦 Bank",tracker:"🗓️ Inventory",history:"📋 History",seasonal:"📅 Seasonal",setup:"⚙️ Setup",suppliers:"🤝 Suppliers"};
+  const tabLabels={today:"📊 Dashboard",sheet:"📊 This Week",thisweek:"🌱 Tasks",graph:"📈 Forecast",bank:"📋 Coverage",tracker:"🗓️ Inventory",history:"📋 History",seasonal:"📅 Seasonal",setup:"⚙️ Setup",suppliers:"🤝 Suppliers"};
 
   const addSpecies=()=>{if(!ns.name.trim())return;setSpecies(p=>[...p,{id:Date.now(),...ns,name:ns.name.trim()}]);setNs({name:"",spawnWeeks:6,spawnDays:42,blockWeeks:4,blockIncubDays:17,fruitDays:11,blockDivisor:2,spawnBagBlocks:12,color:"#7ec8a0",exactFruit:false});};
   const addClient = (name, startDate, clientOrders, clientType, lastWeekOrds) => {
