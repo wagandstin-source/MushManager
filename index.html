@@ -985,17 +985,7 @@ function App() {
     // For 11-day species harvest week = ~1.5 weeks, for 21-day = ~3 weeks
     // But weather forecast only covers 16 days so cap at week 2
     const fruitWeatherOffset = Math.min(2, Math.round(sp.fruitDays/7));
-    const fruitLbs = (()=>{
-      let lbs = 0;
-      clients.forEach(cl=>{
-        const base = getBaselineLbs(cl.id, sp.id);
-        if(!base) return;
-        const seasonAdj = r2(base * (getSeasonal(fruitWeatherOffset,seasonal)/regularMult));
-        const nudge = getWeatherNudge(cl, fruitWeatherOffset);
-        lbs += r2(seasonAdj * nudge);
-      });
-      return r2(lbs + r2(fruitUpLbs*(getSeasonal(fruitWeatherOffset,seasonal)/regularMult)) + extraAt(fruitWeatherOffset));
-    })();
+    const fruitLbs = r2(getBankBaselineLbs(sp.id, fruitWeatherOffset) + extraAt(fruitWeatherOffset));
 
     const spawnBags1=r2((spawnLbs /sp.blockDivisor)/getSpawnBagBlocks(sp));
     const spawnBags2=r2((spawnLbs2/sp.blockDivisor)/getSpawnBagBlocks(sp));
@@ -1017,7 +1007,7 @@ function App() {
       fruitLbs,fruitBlocks,fruitScheduled,fruitHarvestLabel,
       weeklyBlocks:blocks1,weeklySpawnBags:spawnBags1,
     };
-  }),[orders,species,clients,seasonal,extraDemand,liveItems,schedule,sortedUpcoming]);
+  }),[orders,species,clients,seasonal,extraDemand,liveItems,schedule,sortedUpcoming,orderHistory]);
 
   const coverageWeeks = useMemo(()=>{
     const cov = {};
