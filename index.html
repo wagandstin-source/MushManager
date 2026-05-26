@@ -865,13 +865,12 @@ function App() {
     clients.forEach(cl=>{rawLbs+=parseFloat(orders[cl.id]?.[sp.id]??0)||0;});
     liveItems.forEach(item=>{rawLbs+=parseFloat(item.orders?.[sp.id]??0)||0;});
 
-    // Baseline = normalized average of last 8 weeks per client, nudged by 16-day forecast
-    let baselineLbs=0;
-    clients.forEach(cl=>{
-      const base = getBaselineLbs(cl.id, sp.id);
-      const nudge = getForecastNudge(cl);
-      baselineLbs += base * nudge;
-    });
+    // Baseline = bank history average (N-week rolling, weather-normalized when submitted)
+    // Weather nudge still applied on top for real-time forecast adjustment
+    const avgForecastNudge = clients.length > 0
+      ? r2(clients.reduce((s,cl)=>s+getForecastNudge(cl),0) / clients.length)
+      : 1.0;
+    const baselineLbs = r2(getBankBaselineLbs(sp.id, 0) * avgForecastNudge);
 
     // Only add upcoming items to baseline if they start soon enough for regular orders
     // Items are already filtered to "live" (start within 5 days) by liveItems
@@ -918,21 +917,15 @@ function App() {
 
     // Regular client lbs — use history baseline (todayLbs) with seasonal scaling
     // Weather nudge applied per client at the given week offset
-    const regularMult = getSeasonal(0,seasonal);
 
     // Per-client weather-nudged projection at a given week offset.
     // Uses getForecastNudge (full 16-day window) so blocks and spawn are nudged
     // by current forecast conditions regardless of how far away their harvest is.
     const projRegularOnly=(wo)=>{
-      let lbs = 0;
-      clients.forEach(cl=>{
-        const base = getBaselineLbs(cl.id, sp.id);
-        if(!base) return;
-        const seasonAdj = r2(base * (getSeasonal(wo,seasonal)/regularMult));
-        const nudge = getForecastNudge(cl);
-        lbs += r2(seasonAdj * nudge);
-      });
-      return r2(lbs);
+      const base = getBankBaselineLbs(sp.id, wo);
+      if(!base) return 0;
+      const nudge = avgForecastNudge;
+      return r2(base * nudge);
     };
 
     const totalAt=(wo, upcomingLbs=0)=>r2(projRegularOnly(wo) + upcomingLbs + extraAt(wo));
@@ -2183,42 +2176,62 @@ function App() {
     return r2(flooredTotal * ratio);
   }
 
-  // Bank demand: history average normalized by seasonal, re-applied at target harvest week
+  // Bank demand: per-client history average normalized by seasonal, re-applied at target harvest week
   function getBankBaselineLbs(sId, weekOffset) {
     const avgWeeks = schedule.bankAvgWeeks ?? 6;
     const todayMult = getSeasonal(0, seasonal);
     const targetMult = getSeasonal(weekOffset, seasonal);
+    const sp = species.find(s => s.id === sId);
 
-    // Collect last avgWeeks of confirmed history for this species across all clients
-    const allWeeks = Object.entries(orderHistory)
-      .filter(([k,v]) => k.startsWith('202') && v._confirmed)
-      .map(([weekKey, entry]) => {
-        let total = 0;
-        clients.forEach(cl => { total += parseFloat(entry[cl.id]?.[sId] ?? 0) || 0; });
-        return { weekKey, total };
-      })
-      .sort((a,b) => b.weekKey.localeCompare(a.weekKey))
-      .slice(0, avgWeeks);
+    let totalLbs = 0;
 
-    if(allWeeks.length === 0) {
-      // No history — fall back to raw orders
-      let raw = 0;
-      clients.forEach(cl => { raw += parseFloat(orders[String(cl.id)]?.[String(sId)] ?? 0) || 0; });
-      return r2(raw * (targetMult / (todayMult || 1)));
-    }
+    clients.forEach(cl => {
+      const currentLbs = parseFloat(orders[String(cl.id)]?.[String(sId)] ?? 0) || 0;
 
-    // Normalize each week to season-neutral then average
-    let totalNorm = 0;
-    allWeeks.forEach(({weekKey, total}) => {
-      const wkDate = new Date(weekKey+'T12:00:00');
-      const wkOffset = Math.round((wkDate - new Date()) / (7*24*60*60*1000));
-      const wkMult = getSeasonal(wkOffset, seasonal) || todayMult || 1;
-      totalNorm += total / wkMult;
+      // Find the most recent menu change for this client+species
+      const relevantChange = menuChanges
+        .filter(mc => mc.clientId === cl.id)
+        .filter(mc => {
+          const oldLbs = parseFloat(mc.oldMenu?.[sId] ?? mc.oldMenu?.[String(sId)] ?? -1);
+          const newLbs = parseFloat(mc.newMenu?.[sId] ?? mc.newMenu?.[String(sId)] ?? -1);
+          return oldLbs !== newLbs; // species actually changed
+        })
+        .sort((a,b) => b.effectiveDate.localeCompare(a.effectiveDate))[0];
+
+      const cutoffDate = relevantChange?.effectiveDate || null;
+
+      // Get this client's history for this species, filtered by menu change date
+      const clientHistory = Object.entries(orderHistory)
+        .filter(([k,v]) => k.startsWith('202') && v._confirmed)
+        .filter(([k]) => !cutoffDate || k >= cutoffDate) // only weeks after menu change
+        .map(([weekKey, entry]) => ({
+          weekKey,
+          lbs: parseFloat(entry[cl.id]?.[sId] ?? 0) || 0
+        }))
+        .sort((a,b) => b.weekKey.localeCompare(a.weekKey))
+        .slice(0, avgWeeks);
+
+      if(clientHistory.length < 2) {
+        // Not enough history — use current orders scaled to target week
+        totalLbs += r2(currentLbs * (targetMult / (todayMult || 1)));
+        return;
+      }
+
+      // Normalize each week by its seasonal multiplier
+      let normTotal = 0;
+      clientHistory.forEach(({weekKey, lbs}) => {
+        const wkDate = new Date(weekKey+'T12:00:00');
+        const wkOffset = Math.round((wkDate - new Date()) / (7*24*60*60*1000));
+        const wkMult = getSeasonal(wkOffset, seasonal) || todayMult || 1;
+        normTotal += lbs / wkMult;
+      });
+      const avgNorm = normTotal / clientHistory.length;
+
+      // Re-apply target week's seasonal multiplier
+      totalLbs += r2(avgNorm * targetMult);
     });
-    const avgNorm = totalNorm / allWeeks.length;
 
-    // Re-apply target week's seasonal multiplier
-    return r2(avgNorm * targetMult);
+    return r2(totalLbs);
   }
   function getPrice(cl, spId) {
     const sp = species.find(s => s.id === spId);
