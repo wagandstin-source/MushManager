@@ -108,7 +108,7 @@ const DEFAULT_SCHEDULE = {
   blockDay:        4, // Thursday
   fruitDays:       [2, 5], // Tuesday and Friday
   fruitResetDay:   1, // Monday
-  weekStartDay:    1, // Monday — calendar week start
+  bankAvgWeeks:    6, // weeks of history to average for bank demand
   productionFloor: 0.5, // 50% floor — minimum production even in slow periods
   weatherEnabled: true,
   incubationCapacity: 200,  // max blocks in incubation room
@@ -1105,7 +1105,6 @@ function App() {
   // ── New Bank: per-species, per-harvest-week surplus/shortage ─────────────
   const bankWeeks = useMemo(()=>{
     const today = new Date(); today.setHours(0,0,0,0);
-    const todayMult = getSeasonal(0, seasonal);
     const weekStartDay = schedule.weekStartDay ?? 1; // Monday default
 
     // Snap a date to the start of its calendar week
@@ -1162,12 +1161,9 @@ function App() {
 
         // Demand (seasonal offset based on weeks from today to harvest)
         const weekOffset = Math.round((harvestWeekStart - today) / (7*86400000));
-        let rawLbs = 0;
-        clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
-        const mult = getSeasonal(weekOffset, seasonal);
-        const projLbs = rawLbs>0 && todayMult>0 ? r2(rawLbs*(mult/todayMult)) : 0;
+        const demandLbs = getBankBaselineLbs(sp.id, weekOffset);
         const extraLbs = extraDemand[weekOffset]?.[sp.id]||0;
-        const demandBlocks = r2((projLbs + extraLbs) / sp.blockDivisor);
+        const demandBlocks = r2((demandLbs + extraLbs) / sp.blockDivisor);
         const demandSpawn = r2(demandBlocks / getSpawnBagBlocks(sp));
 
         const blocksLogged = getLogged(blockInocWeekStart, 'block');
@@ -1207,7 +1203,7 @@ function App() {
 
       return { sp, weeks: weeksWithCarry, hasShortage, hasData: rawLbs > 0 };
     }).filter(b=>b.hasData);
-  },[species,tracker,orders,clients,seasonal,extraDemand,schedule]);
+  },[species,tracker,orders,clients,seasonal,extraDemand,schedule,orderHistory]);
 
   const activeSpecies = useMemo(()=>{
     // Calculate how many blocks are being substituted into/out of fruiting room per species
@@ -1321,12 +1317,9 @@ function App() {
       const harvestWeekStart = snapToWeekStart(harvestDateRaw);
 
       const weekOffset = Math.round((harvestWeekStart - today) / (7*86400000));
-      let rawLbs = 0;
-      clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
-      const mult = getSeasonal(weekOffset, seasonal);
-      const projLbs = rawLbs>0 && todayMult>0 ? r2(rawLbs*(mult/todayMult)) : 0;
+      const demandLbs = getBankBaselineLbs(sp.id, weekOffset);
       const extraLbs = extraDemand[weekOffset]?.[sp.id]||0;
-      const demandBlocks = r2((projLbs + extraLbs) / sp.blockDivisor);
+      const demandBlocks = r2((demandLbs + extraLbs) / sp.blockDivisor);
       const demandSpawn = r2(demandBlocks / getSpawnBagBlocks(sp));
       const blocksLogged = getLogged(blockInocWeekStart, 'block', sp.id);
       const spawnLogged = getLogged(snapToWeekStart(new Date(blockInocWeekStart.getTime() - spawnDays*86400000)), 'spawn', sp.id);
@@ -1366,7 +1359,7 @@ function App() {
         spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
       };
     });
-  },[activeSpecies, tracker, orders, clients, seasonal, extraDemand, schedule, inocWeekAdjust]);
+  },[activeSpecies, tracker, orders, clients, seasonal, extraDemand, schedule, inocWeekAdjust, orderHistory]);
 
   // Auto carry-over: when switch is on, apply last week's shortfall to this week for each species
   // ── Full capacity simulation — projects room occupancy including planned inoculations ──
@@ -2200,7 +2193,43 @@ function App() {
     return r2(flooredTotal * ratio);
   }
 
-  // ── Pricing helpers ──────────────────────────────────────────────────────
+  // Bank demand: history average normalized by seasonal, re-applied at target harvest week
+  function getBankBaselineLbs(sId, weekOffset) {
+    const avgWeeks = schedule.bankAvgWeeks ?? 6;
+    const todayMult = getSeasonal(0, seasonal);
+    const targetMult = getSeasonal(weekOffset, seasonal);
+
+    // Collect last avgWeeks of confirmed history for this species across all clients
+    const allWeeks = Object.entries(orderHistory)
+      .filter(([k,v]) => k.startsWith('202') && v._confirmed)
+      .map(([weekKey, entry]) => {
+        let total = 0;
+        clients.forEach(cl => { total += parseFloat(entry[cl.id]?.[sId] ?? 0) || 0; });
+        return { weekKey, total };
+      })
+      .sort((a,b) => b.weekKey.localeCompare(a.weekKey))
+      .slice(0, avgWeeks);
+
+    if(allWeeks.length === 0) {
+      // No history — fall back to raw orders
+      let raw = 0;
+      clients.forEach(cl => { raw += parseFloat(orders[String(cl.id)]?.[String(sId)] ?? 0) || 0; });
+      return r2(raw * (targetMult / (todayMult || 1)));
+    }
+
+    // Normalize each week to season-neutral then average
+    let totalNorm = 0;
+    allWeeks.forEach(({weekKey, total}) => {
+      const wkDate = new Date(weekKey+'T12:00:00');
+      const wkOffset = Math.round((wkDate - new Date()) / (7*24*60*60*1000));
+      const wkMult = getSeasonal(wkOffset, seasonal) || todayMult || 1;
+      totalNorm += total / wkMult;
+    });
+    const avgNorm = totalNorm / allWeeks.length;
+
+    // Re-apply target week's seasonal multiplier
+    return r2(avgNorm * targetMult);
+  }
   function getPrice(cl, spId) {
     const sp = species.find(s => s.id === spId);
     if (!sp) return 0;
@@ -4247,9 +4276,22 @@ function App() {
             )}
 
             {/* New Bank: per-species harvest week surplus/shortage */}
+            <div style={{...S.card,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",marginBottom:8}}>
+              <div>
+                <p style={{margin:0,fontSize:12,fontWeight:"bold",color:"#7ec8a0"}}>📊 History average window</p>
+                <p style={{margin:"2px 0 0",fontSize:10,color:"#5a8a5a"}}>Weeks of submitted history used to calculate demand</p>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button onClick={()=>setSchedule(p=>({...p,bankAvgWeeks:Math.max(1,(p.bankAvgWeeks??6)-1)}))}
+                  style={{...S.btn("#2a3a2a"),padding:"4px 10px",fontSize:14,fontWeight:"bold"}}>−</button>
+                <span style={{fontSize:14,fontWeight:"bold",color:"#d4e8c2",minWidth:24,textAlign:"center"}}>{schedule.bankAvgWeeks??6}</span>
+                <button onClick={()=>setSchedule(p=>({...p,bankAvgWeeks:Math.min(26,(p.bankAvgWeeks??6)+1)}))}
+                  style={{...S.btn("#2a3a2a"),padding:"4px 10px",fontSize:14,fontWeight:"bold"}}>+</button>
+              </div>
+            </div>
             <div style={{...S.box(),marginBottom:8}}>
               <p style={{margin:0,fontSize:11,color:"#a8c890"}}>
-                Surplus/shortage per harvest week based on what was logged on each inoculation date.
+                Demand based on <strong>{schedule.bankAvgWeeks??6}-week</strong> history average, seasonally adjusted per harvest week.
                 <strong style={{color:"#7ec8a0"}}> Green = surplus</strong>,
                 <strong style={{color:"#e07b8a"}}> red = shortage</strong>.
               </p>
