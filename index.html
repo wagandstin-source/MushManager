@@ -2211,7 +2211,7 @@ function App() {
         .filter(([k]) => !cutoffDate || k >= cutoffDate) // only weeks after menu change
         .map(([weekKey, entry]) => ({
           weekKey,
-          lbs: parseFloat(entry[cl.id]?.[sId] ?? 0) || 0
+          lbs: parseFloat(entry[String(cl.id)]?.[String(sId)] ?? 0) || 0
         }))
         .sort((a,b) => b.weekKey.localeCompare(a.weekKey))
         .slice(0, avgWeeks);
