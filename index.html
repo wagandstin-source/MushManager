@@ -1444,6 +1444,7 @@ function App() {
       return{...sp,
         blocks1:r2(bk1+inocAdj), blocks2:r2(bk2+inocAdj), blocks3:r2(bk3+inocAdj),
         spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
+        bkCarryWm1, sbCarryWm1, ftCarryWm1,
         fruitTargetNew,
         fruitBlocks: fruitTargetNew,
       };
@@ -3971,34 +3972,6 @@ function App() {
                       {needsSpawn&&<span style={{fontSize:11,color:"#e8a87c"}}>🌾 {fmt(sp.spawnBags1)}</span>}
                       {needsBlocks&&<span style={{fontSize:11,color:"#a78bda"}}>🧱 {fmt(sp.blocks1)}</span>}
                       {needsFruit&&<span style={{fontSize:11,color:"#7ec8a0"}}>🚪 {fmt(fruitRemaining)}</span>}
-                      {(()=>{
-                        const cov=getFruitRoomCoverage(sp.id);
-                        if(!cov||cov.delta===0)return null;
-                        const alreadyApplied=getFruitWeekAdjust(sp.id);
-                        if(alreadyApplied!==0)return null;
-                        const isShortage=cov.delta<0;
-                        // Convert lbs delta to blocks
-                        const blkDelta=r2(Math.abs(cov.delta)/(sp.blockDivisor||1));
-                        const amt=fmt(blkDelta);
-                        const color=isShortage?"#e07b8a":"#f4d06f";
-                        const adjDelta=isShortage?blkDelta:-blkDelta;
-                        const label=isShortage?`↓ ${amt} blks short`:`↑ ${amt} blks surplus`;
-                        const question=isShortage
-                          ?`Last week's fruiting room blocks are ${fmt(Math.abs(cov.delta))} lbs short of the projected ${fmt(cov.projLbs)} lbs. Add ${amt} catch-up blocks to this week's target?`
-                          :`Last week's fruiting room blocks yield ${fmt(cov.delta)} lbs more than the projected ${fmt(cov.projLbs)} lbs. Remove ${amt} blocks from this week's target?`;
-                        const openConfirm=(e)=>{e.stopPropagation();setFruitAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:adjDelta,label,question});};
-                        return(
-                          <span
-                            onClick={openConfirm}
-                            onContextMenu={e=>{e.preventDefault();openConfirm(e);}}
-                            onTouchStart={e=>{e.currentTarget._pt=setTimeout(()=>openConfirm(e),600);}}
-                            onTouchEnd={e=>{clearTimeout(e.currentTarget._pt);}}
-                            onTouchMove={e=>{clearTimeout(e.currentTarget._pt);}}
-                            style={{fontSize:10,color,background:color+'18',border:`1px solid ${color}55`,borderRadius:4,padding:"1px 5px",cursor:"pointer",userSelect:"none"}}>
-                            {label}
-                          </span>
-                        );
-                      })()}
                       {!needsAction&&!needsFruit&&<span style={{fontSize:11,color:"#3a5a3a"}}>✓ covered</span>}
                       <span style={{fontSize:12,color:"#3a5a3a"}}>{isExpanded?"▲":"▼"}</span>
                     </div>
@@ -4075,6 +4048,13 @@ function App() {
                                       {" · Resets "}{DAYS[schedule.blockDay??4]}
                                     </p>
                                   </div>
+                                  {sp.sbCarryWm1 !== 0 && (
+                                    <p style={{margin:"0 0 3px",fontSize:9,color:sp.sbCarryWm1<0?"#e07b8a":"#7ec8a0"}}>
+                                      {sp.sbCarryWm1<0
+                                        ? `↑ ${fmt(Math.abs(sp.sbCarryWm1))} carried from last week's shortage`
+                                        : `↓ ${fmt(sp.sbCarryWm1)} reduced from last week's surplus`}
+                                    </p>
+                                  )}
                                   {spawnRemainder>0&&(
                                     <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
                                       {spawnDismissed>0
@@ -4111,12 +4091,12 @@ function App() {
                                       {" · Resets "}{DAYS[schedule.blockDay??4]}
                                     </p>
                                   </div>
-                                  {/* Carry indicator — shows what last week's balance contributed */}
-                                  {lastWeekBlockBalance !== 0 && (
-                                    <p style={{margin:"0 0 3px",fontSize:9,color:lastWeekBlockBalance<0?"#e07b8a":"#7ec8a0"}}>
-                                      {lastWeekBlockBalance<0
-                                        ? `↑ ${fmt(Math.abs(lastWeekBlockBalance))} carried from last week's shortage`
-                                        : `↓ ${fmt(lastWeekBlockBalance)} reduced from last week's surplus`}
+                                  {/* Carry indicator — shows last week's carry value */}
+                                  {sp.bkCarryWm1 !== 0 && (
+                                    <p style={{margin:"0 0 3px",fontSize:9,color:sp.bkCarryWm1<0?"#e07b8a":"#7ec8a0"}}>
+                                      {sp.bkCarryWm1<0
+                                        ? `↑ ${fmt(Math.abs(sp.bkCarryWm1))} carried from last week's shortage`
+                                        : `↓ ${fmt(sp.bkCarryWm1)} reduced from last week's surplus`}
                                     </p>
                                   )}
                                   {remainder>0&&(
@@ -4147,48 +4127,13 @@ function App() {
                                         style={{...S.btn("#5a2a2a"),padding:"1px 7px",fontSize:10}}>↩ Undo</button>
                                     )}
                                   </div>
-                                  {(()=>{
-                                    const cov=getFruitRoomCoverage(sp.id);
-                                    if(!cov||cov.delta===0)return null;
-                                    const isShortage=cov.delta<0;
-                                    const blkDelta=r2(Math.abs(cov.delta)/(sp.blockDivisor||1));
-                                    const amt=fmt(blkDelta);
-                                    const color=isShortage?"#e07b8a":"#f4d06f";
-                                    const adjDelta=isShortage?blkDelta:-blkDelta;
-                                    const question=isShortage
-                                      ?`Last week's fruiting room blocks are ${fmt(Math.abs(cov.delta))} lbs short of the projected ${fmt(cov.projLbs)} lbs. Add ${amt} catch-up blocks to this week's target?`
-                                      :`Last week's fruiting room blocks yield ${fmt(cov.delta)} lbs more than the projected ${fmt(cov.projLbs)} lbs. Remove ${amt} blocks from this week's target?`;
-                                    if(adj!==0){
-                                      const adjColor=adj>0?"#e07b8a":"#f4d06f";
-                                      const adjLabel=adj>0?`+${fmt(adj)} catch-up`:`-${fmt(Math.abs(adj))} surplus`;
-                                      return(
-                                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                                          <p style={{margin:0,fontSize:9,color:adjColor}}>
-                                            {isShortage
-                                              ?`↓ ${amt} blks short · yield ${fmt(cov.yieldLbs)} vs ${fmt(cov.projLbs)} lbs projected`
-                                              :`↑ ${amt} blks surplus · yield ${fmt(cov.yieldLbs)} vs ${fmt(cov.projLbs)} lbs projected`}
-                                            {" · "}<strong>{adjLabel} applied</strong>
-                                          </p>
-                                          <button onClick={()=>applyFruitWeekAdjust(sp.id,-adj)}
-                                            style={{...S.btn("#3a2a1a"),padding:"1px 6px",fontSize:9}}>✕ Remove</button>
-                                        </div>
-                                      );
-                                    }
-                                    return(
-                                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2,flexWrap:"wrap"}}>
-                                        <p style={{margin:0,fontSize:9,color}}>
-                                          {isShortage
-                                            ?`↓ ${amt} blks short · last wk yield ${fmt(cov.yieldLbs)} lbs vs ${fmt(cov.projLbs)} lbs projected`
-                                            :`↑ ${amt} blks surplus · last wk yield ${fmt(cov.yieldLbs)} lbs vs ${fmt(cov.projLbs)} lbs projected`}
-                                        </p>
-                                        <button
-                                          onClick={e=>{e.stopPropagation();setFruitAdjustConfirm({spId:sp.id,spName:sp.name,spColor:sp.color,delta:adjDelta,label:isShortage?`+${amt} catch-up`:`-${amt} surplus`,question});}}
-                                          style={{...S.btn(isShortage?"#5a2a2a":"#3a3a1a"),padding:"1px 7px",fontSize:9}}>
-                                          {isShortage?"+ Add to this week":"− Remove from this week"}
-                                        </button>
-                                      </div>
-                                    );
-                                  })()}
+                                  {sp.ftCarryWm1 !== 0 && (
+                                    <p style={{margin:"0 0 3px",fontSize:9,color:sp.ftCarryWm1<0?"#e07b8a":"#7ec8a0"}}>
+                                      {sp.ftCarryWm1<0
+                                        ? `↑ ${fmt(Math.abs(sp.ftCarryWm1))} carried from last week's shortage`
+                                        : `↓ ${fmt(sp.ftCarryWm1)} reduced from last week's surplus`}
+                                    </p>
+                                  )}
                                 </div>
                               );
                             })()}
