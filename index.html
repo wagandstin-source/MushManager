@@ -1123,7 +1123,7 @@ function App() {
       const totalWeekSpan = Math.ceil((refDays + spawnDays) / 7);
 
       const weeks = [];
-      for(let w = -totalWeekSpan; w <= 2; w++){
+      for(let w = -totalWeekSpan; w <= 4; w++){
         // Block inoculation week = thisWeekStart + w*7
         const blockInocWeekStart = new Date(thisWeekStart);
         blockInocWeekStart.setDate(thisWeekStart.getDate() + w*7);
@@ -1155,38 +1155,65 @@ function App() {
         const blockBalance = r2(blocksLogged - demandBlocks);
         const spawnBalance = r2(spawnLogged - demandSpawn);
 
+        // Fruiting room load week = harvest week - fruitDays, snapped to fruitResetDay
+        const fruitResetDay = schedule.fruitResetDay ?? 1;
+        const fruitLoadDateRaw = new Date(harvestWeekStart);
+        fruitLoadDateRaw.setDate(harvestWeekStart.getDate() - fruitDays);
+        // Snap to fruitResetDay
+        const frDow = fruitLoadDateRaw.getDay();
+        const frDaysBack = (frDow - fruitResetDay + 7) % 7;
+        const fruitLoadWeekStart = new Date(fruitLoadDateRaw);
+        fruitLoadWeekStart.setDate(fruitLoadDateRaw.getDate() - frDaysBack);
+        const fruitLoadWeekKey = fruitLoadWeekStart.toISOString().slice(0,10);
+        const fruitLoadLabel = fruitLoadWeekStart.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+
+        // Blocks loaded into fruiting room that week for this species
+        const fruitLoadedEntries = (fruitLoaded[sp.id]?.[fruitLoadWeekKey]) || [];
+        const fruitLoadedQty = r2(Array.isArray(fruitLoadedEntries)
+          ? fruitLoadedEntries.reduce((a,e)=>a+(e.qty||0),0)
+          : fruitLoadedEntries);
+
+        const fruitBalance = r2(fruitLoadedQty - demandBlocks);
+
         weeks.push({
           w, harvestLabel, isPast,
-          blockInocLabel,
-          spawnInocLabel,
+          blockInocLabel, blockInocWeekStart: new Date(blockInocWeekStart),
+          spawnInocLabel, spawnInocWeekSnapped: new Date(spawnInocWeekSnapped),
+          fruitLoadLabel, fruitLoadWeekKey, fruitLoadWeekStart: new Date(fruitLoadWeekStart),
           demandBlocks, demandSpawn,
           blocksLogged, spawnLogged,
           blockBalance, spawnBalance,
+          fruitLoadedQty, fruitBalance,
         });
       }
 
-      // Calculate carry: positives accumulate and absorb negatives going forward
+      // Calculate carry using per-section cutoff dates:
+      // Block: accumulate negatives from rows where blockInocWeek >= thisWeek
+      // Spawn: accumulate negatives from rows where spawnInocWeek >= thisWeek
+      // Fruit: accumulate negatives from rows where fruitLoadWeek >= thisWeek
       let blockCarry = 0;
       let spawnCarry = 0;
+      let fruitCarry = 0;
       const weeksWithCarry = weeks.map(wk => {
-        // Apply carry to this week
         blockCarry = r2(blockCarry + wk.blockBalance);
         spawnCarry = r2(spawnCarry + wk.spawnBalance);
-        // Carry can't go below zero — negatives don't carry forward
+        fruitCarry = r2(fruitCarry + wk.fruitBalance);
         const blockCarryVal = blockCarry;
         const spawnCarryVal = spawnCarry;
-        if(blockCarry < 0) blockCarry = 0;
-        if(spawnCarry < 0) spawnCarry = 0;
-        return { ...wk, blockCarryVal, spawnCarryVal };
+        const fruitCarryVal = fruitCarry;
+        if(wk.blockInocWeekStart < thisWeekStart) { if(blockCarry < 0) blockCarry = 0; }
+        if(wk.spawnInocWeekSnapped < thisWeekStart) { if(spawnCarry < 0) spawnCarry = 0; }
+        if(wk.fruitLoadWeekStart < thisWeekStart) { if(fruitCarry < 0) fruitCarry = 0; }
+        return { ...wk, blockCarryVal, spawnCarryVal, fruitCarryVal };
       });
 
       let rawLbs = 0;
       clients.forEach(cl=>{ rawLbs += parseFloat(orders[String(cl.id)]?.[String(sp.id)]??0)||0; });
-      const hasShortage = weeksWithCarry.some(wk=>wk.blockCarryVal < 0 || wk.spawnCarryVal < 0);
+      const hasShortage = weeksWithCarry.some(wk=>wk.blockCarryVal < 0 || wk.spawnCarryVal < 0 || wk.fruitCarryVal < 0);
 
       return { sp, weeks: weeksWithCarry, hasShortage, hasData: rawLbs > 0 };
     }).filter(b=>b.hasData);
-  },[species,tracker,orders,clients,seasonal,extraDemand,schedule,orderHistory]);
+  },[species,tracker,orders,clients,seasonal,extraDemand,schedule,orderHistory,fruitLoaded]);
 
   const activeSpecies = useMemo(()=>{
     // Calculate how many blocks are being substituted into/out of fruiting room per species
@@ -1307,8 +1334,23 @@ function App() {
       const blocksLogged = getLogged(blockInocWeekStart, 'block', sp.id);
       const spawnLogged = getLogged(snapToWeekStart(new Date(blockInocWeekStart.getTime() - spawnDays*86400000)), 'spawn', sp.id);
 
+      // Fruit load week = harvestWeek - fruitDays, snapped to fruitResetDay
+      const fruitResetDay = schedule.fruitResetDay ?? 1;
+      const fruitLoadDateRaw = new Date(harvestWeekStart);
+      fruitLoadDateRaw.setDate(harvestWeekStart.getDate() - fruitDays);
+      const frDow = fruitLoadDateRaw.getDay();
+      const frDaysBack = (frDow - fruitResetDay + 7) % 7;
+      const fruitLoadWeekStart = new Date(fruitLoadDateRaw);
+      fruitLoadWeekStart.setDate(fruitLoadDateRaw.getDate() - frDaysBack);
+      const fruitLoadWeekKey = fruitLoadWeekStart.toISOString().slice(0,10);
+      const fruitLoadedEntries = (fruitLoaded[sp.id]?.[fruitLoadWeekKey]) || [];
+      const fruitLoadedQty = r2(Array.isArray(fruitLoadedEntries)
+        ? fruitLoadedEntries.reduce((a,e)=>a+(e.qty||0),0)
+        : fruitLoadedEntries);
+
       return { demandBlocks, demandSpawn, blocksLogged, spawnLogged,
-               blockBalance: r2(blocksLogged-demandBlocks), spawnBalance: r2(spawnLogged-demandSpawn) };
+               blockBalance: r2(blocksLogged-demandBlocks), spawnBalance: r2(spawnLogged-demandSpawn),
+               fruitLoadWeekKey, fruitLoadedQty, fruitBalance: r2(fruitLoadedQty-demandBlocks) };
     }
 
     return activeSpecies.map(sp=>{
@@ -1327,27 +1369,86 @@ function App() {
       const spawnNext2 = getBankRow(sp, spawnWeekOffset + 2);
 
       const inocAdj = inocWeekAdjust[sp.id]?.[getInocWeekKey()]||0;
-      const blockCarryAdj = -lastRow.blockBalance;
-      const spawnCarryAdj = -spawnLast.spawnBalance;
 
-      const thisWeekRaw = r2((thisRow.demandBlocks - thisRow.blocksLogged) + blockCarryAdj);
-      const bk1 = r2(Math.max(0, thisWeekRaw));
-      const thisWeekSurplus = thisWeekRaw < 0 ? Math.abs(thisWeekRaw) : 0; // extra blocks beyond 1wk need
-      const bk2 = r2(Math.max(0, bk1 + next1Row.demandBlocks - thisWeekSurplus));
-      const bk3 = r2(Math.max(0, bk2 + next2Row.demandBlocks));
+      // Use bank carry logic to compute 1wk/2wk/3wk targets
+      // Find this species' bankWeeks rows for w=0, w=1, w=2
+      // We compute carry inline here (same logic as bankWeeks useMemo)
+      let blockCarryAcc = 0;
+      let bkCarryWm1 = 0, bkCarryW0 = 0, bkCarryW1 = 0;
+      const totalWeekSpan2 = Math.ceil(((getBlockIncubDays(sp) + sp.fruitDays) + (sp.spawnDays ?? sp.spawnWeeks*7)) / 7);
+      for (let w2 = -totalWeekSpan2; w2 <= 4; w2++) {
+        const row = getBankRow(sp, w2);
+        blockCarryAcc = r2(blockCarryAcc + row.blockBalance);
+        const carryVal = blockCarryAcc;
+        // Only clamp past block inoc weeks (w2 < 0 = block inoc before this week)
+        if (w2 < 0 && blockCarryAcc < 0) blockCarryAcc = 0;
+        if (w2 === -1) bkCarryWm1 = carryVal;
+        if (w2 === 0) bkCarryW0 = carryVal;
+        if (w2 === 1) bkCarryW1 = carryVal;
+      }
 
-      const spawnThisWeekRaw = r2((spawnThis.demandSpawn - spawnThis.spawnLogged) + spawnCarryAdj);
-      const sb1 = r2(Math.max(0, spawnThisWeekRaw));
-      const spawnThisWeekSurplus = spawnThisWeekRaw < 0 ? Math.abs(spawnThisWeekRaw) : 0;
-      const sb2 = r2(Math.max(0, sb1 + spawnNext1.demandSpawn - spawnThisWeekSurplus));
-      const sb3 = r2(Math.max(0, sb2 + spawnNext2.demandSpawn));
+      // 1wk = thisRow.demand - lastRow carry - thisRow.done
+      // 2wk = next1Row.demand - thisRow carry
+      // 3wk = next2Row.demand - next1Row carry
+      const bk1Raw = r2(thisRow.demandBlocks - bkCarryWm1 - thisRow.blocksLogged);
+      const bk1 = r2(Math.max(0, bk1Raw));
+      const bk2Raw = r2(next1Row.demandBlocks - bkCarryW0);
+      const bk2 = r2(Math.max(0, bk2Raw));
+      const bk3Raw = r2(next2Row.demandBlocks - bkCarryW1);
+      const bk3 = r2(Math.max(0, bk3Raw));
+
+      // Spawn side — same carry logic offset by spawnWeekOffset
+      let spawnCarryAcc = 0;
+      let sbCarryWm1 = 0, sbCarryW0 = 0, sbCarryW1 = 0;
+      for (let w2 = -totalWeekSpan2; w2 <= spawnWeekOffset + 4; w2++) {
+        const row = getBankRow(sp, w2);
+        spawnCarryAcc = r2(spawnCarryAcc + row.spawnBalance);
+        const carryVal = spawnCarryAcc;
+        // Only clamp past spawn inoc weeks (w2 < spawnWeekOffset = spawn inoc before this week)
+        if (w2 < spawnWeekOffset && spawnCarryAcc < 0) spawnCarryAcc = 0;
+        if (w2 === spawnWeekOffset - 1) sbCarryWm1 = carryVal;
+        if (w2 === spawnWeekOffset) sbCarryW0 = carryVal;
+        if (w2 === spawnWeekOffset + 1) sbCarryW1 = carryVal;
+      }
+
+      const sb1Raw = r2(spawnThis.demandSpawn - sbCarryWm1 - spawnThis.spawnLogged);
+      const sb1 = r2(Math.max(0, sb1Raw));
+      const sb2Raw = r2(spawnNext1.demandSpawn - sbCarryW0);
+      const sb2 = r2(Math.max(0, sb2Raw));
+      const sb3Raw = r2(spawnNext2.demandSpawn - sbCarryW1);
+      const sb3 = r2(Math.max(0, sb3Raw));
+
+      // Fruit load side — find the block row whose fruitLoadWeekKey = this week's fruit key
+      const currentFruitKey = getFruitWeekKey();
+      let fruitWeekOffset = 0;
+      for (let w2 = -totalWeekSpan2; w2 <= 4; w2++) {
+        const row = getBankRow(sp, w2);
+        if (row.fruitLoadWeekKey === currentFruitKey) { fruitWeekOffset = w2; break; }
+      }
+      let fruitCarryAcc = 0;
+      let ftCarryWm1 = 0;
+      for (let w2 = -totalWeekSpan2; w2 <= fruitWeekOffset; w2++) {
+        const row = getBankRow(sp, w2);
+        fruitCarryAcc = r2(fruitCarryAcc + row.fruitBalance);
+        const carryVal = fruitCarryAcc;
+        // Only clamp past fruit load weeks (w2 < fruitWeekOffset = load week before this week)
+        if (w2 < fruitWeekOffset && fruitCarryAcc < 0) fruitCarryAcc = 0;
+        if (w2 === fruitWeekOffset - 1) ftCarryWm1 = carryVal;
+      }
+
+      // fruitTarget = thisLoadWeek.demandBlocks - lastLoadWeek carry - thisLoadWeek.done
+      const fruitRow = getBankRow(sp, fruitWeekOffset);
+      const fruitTargetRaw = r2(fruitRow.demandBlocks - ftCarryWm1 - fruitRow.fruitLoadedQty);
+      const fruitTargetNew = r2(Math.max(0, fruitTargetRaw));
 
       return{...sp,
         blocks1:r2(bk1+inocAdj), blocks2:r2(bk2+inocAdj), blocks3:r2(bk3+inocAdj),
         spawnBags1:sb1, spawnBags2:sb2, spawnBags3:sb3,
+        fruitTargetNew,
+        fruitBlocks: fruitTargetNew,
       };
     });
-  },[activeSpecies, tracker, orders, clients, seasonal, extraDemand, schedule, inocWeekAdjust, orderHistory]);
+  },[activeSpecies, tracker, orders, clients, seasonal, extraDemand, schedule, inocWeekAdjust, orderHistory, fruitLoaded]);
 
   // Auto carry-over: when switch is on, apply last week's shortfall to this week for each species
   // ── Full capacity simulation — projects room occupancy including planned inoculations ──
@@ -2211,7 +2312,7 @@ function App() {
         .filter(([k]) => !cutoffDate || k >= cutoffDate) // only weeks after menu change
         .map(([weekKey, entry]) => ({
           weekKey,
-          lbs: parseFloat(entry[String(cl.id)]?.[String(sId)] ?? 0) || 0
+          lbs: parseFloat(entry[cl.id]?.[sId] ?? 0) || 0
         }))
         .sort((a,b) => b.weekKey.localeCompare(a.weekKey))
         .slice(0, avgWeeks);
@@ -4318,10 +4419,15 @@ function App() {
                   </div>
                   {isOpen&&(
                     <div style={{padding:"8px 10px 12px",overflowX:"auto"}}>
-                      <table style={{borderCollapse:"collapse",width:"100%",fontSize:10,minWidth:420}}>
+                      <table style={{borderCollapse:"collapse",width:"100%",fontSize:10,minWidth:680}}>
                         <thead>
                           <tr style={{borderBottom:"1px solid #2d4a2d"}}>
                             <th style={{...S.thL,fontSize:10,color:"#5a8a5a"}}>Harvest</th>
+                            <th style={{...S.thL,fontSize:10,color:"#7ec8a0"}}>🚪 Fruit load</th>
+                            <th style={{...S.th("#7ec8a0"),fontSize:10}}>Need</th>
+                            <th style={{...S.th("#7ec8a0"),fontSize:10}}>Done</th>
+                            <th style={{...S.th("#7ec8a0"),fontSize:10}}>Balance</th>
+                            <th style={{...S.th("#7ec8a0"),fontSize:10}}>Carry</th>
                             <th style={{...S.thL,fontSize:10,color:"#a78bda"}}>🧱 Block inoc</th>
                             <th style={{...S.th("#a78bda"),fontSize:10}}>Need</th>
                             <th style={{...S.th("#a78bda"),fontSize:10}}>Done</th>
@@ -4338,9 +4444,11 @@ function App() {
                           {b.weeks.map(wk=>{
                             const bColor = wk.blockBalance >= 0 ? "#7ec8a0" : "#e07b8a";
                             const sColor = wk.spawnBalance >= 0 ? "#7ec8a0" : "#e07b8a";
+                            const fColor = wk.fruitBalance >= 0 ? "#7ec8a0" : "#e07b8a";
                             const bcColor = wk.blockCarryVal >= 0 ? "#a8c890" : "#e07b8a";
                             const scColor = wk.spawnCarryVal >= 0 ? "#a8c890" : "#e07b8a";
-                            const rowBg = (wk.blockCarryVal < 0 || wk.spawnCarryVal < 0) ? "#1a0a0a" : "transparent";
+                            const fcColor = wk.fruitCarryVal >= 0 ? "#a8c890" : "#e07b8a";
+                            const rowBg = (wk.blockCarryVal < 0 || wk.spawnCarryVal < 0 || wk.fruitCarryVal < 0) ? "#1a0a0a" : "transparent";
                             const blockCarryStr = wk.blockCarryVal < 0
                               ? fmt(wk.blockCarryVal)
                               : wk.blockCarryVal === 0 ? "covered"
@@ -4349,9 +4457,18 @@ function App() {
                               ? fmt(wk.spawnCarryVal)
                               : wk.spawnCarryVal === 0 ? "covered"
                               : "+"+fmt(wk.spawnCarryVal);
+                            const fruitCarryStr = wk.fruitCarryVal < 0
+                              ? fmt(wk.fruitCarryVal)
+                              : wk.fruitCarryVal === 0 ? "covered"
+                              : "+"+fmt(wk.fruitCarryVal);
                             return(
                               <tr key={wk.w} style={{background:rowBg,borderBottom:"1px solid #1a2e1a"}}>
                                 <td style={{...S.td,textAlign:"left",color:"#a8c890",fontWeight:"bold",paddingLeft:4}}>{wk.harvestLabel}</td>
+                                <td style={{...S.td,textAlign:"left",color:"#7ec8a0",paddingLeft:4}}>{wk.fruitLoadLabel}</td>
+                                <td style={{...S.td,color:"#d4e8c2"}}>{fmt(wk.demandBlocks)}</td>
+                                <td style={{...S.td,color:"#a8c890"}}>{wk.fruitLoadedQty > 0 ? fmt(wk.fruitLoadedQty) : "—"}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:fColor}}>{wk.fruitBalance>=0?"+":""}{fmt(wk.fruitBalance)}</td>
+                                <td style={{...S.td,fontWeight:"bold",color:fcColor,fontSize:wk.fruitCarryVal===0?9:10}}>{fruitCarryStr}</td>
                                 <td style={{...S.td,textAlign:"left",color:"#a78bda",paddingLeft:4}}>{wk.blockInocLabel}</td>
                                 <td style={{...S.td,color:"#d4e8c2"}}>{fmt(wk.demandBlocks)}</td>
                                 <td style={{...S.td,color:"#a8c890"}}>{fmt(wk.blocksLogged)}</td>
