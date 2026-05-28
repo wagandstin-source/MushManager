@@ -2649,15 +2649,44 @@ function App() {
             </span>
           </div>
 
-          <div style={{maxHeight:320,overflowY:"auto",border:"1px solid #1a2e1a",borderRadius:8,padding:"8px 10px",marginBottom:12}}>
+          <div style={{maxHeight:320,overflowY:"auto",border:"1px solid #1a2e1a",borderRadius:8,padding:"8px 10px",marginBottom:8}}>
             {shownEntries.length===0 && <p style={{margin:0,fontSize:12,color:"#3a5a3a"}}>No spawn bag batches available.</p>}
             {shownEntries.map((e,i)=>{
               const avail = r2(parseFloat(e.qty)||0);
               const val = inputs[e.id] ?? 0;
+              const editingAvail = spawnGuide._editAvail===e.id;
               return(
                 <div key={e.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",padding:"6px 0",borderBottom:i<shownEntries.length-1?"1px solid #111e11":"none"}}>
                   <span style={{fontSize:11,color:"#5a8a5a",minWidth:92}}>{e.date}</span>
-                  <span style={{fontSize:11,color:"#5a8a5a"}}>Avail: <strong style={{color:"#d4e8c2"}}>{fmt(avail)}</strong></span>
+                  {editingAvail ? (
+                    <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:10,color:"#f4d06f"}}>Actual qty:</span>
+                      <input
+                        type="number" min="0" step="0.25"
+                        defaultValue={avail}
+                        autoFocus
+                        onBlur={ev=>{
+                          const newQty = r2(Math.max(0, parseFloat(ev.target.value)||0));
+                          setTracker(prev=>prev.map(t=>t.id===e.id?{...t,qty:newQty}:t));
+                          const clampedVal = r2(Math.min(newQty, parseFloat(inputs[e.id])||0));
+                          setSpawnGuide(p=>({...p, _editAvail:null, inputs:{...(p.inputs||{}), [e.id]:clampedVal}}));
+                        }}
+                        onKeyDown={ev=>{
+                          if(ev.key==="Enter") ev.target.blur();
+                          if(ev.key==="Escape") setSpawnGuide(p=>({...p,_editAvail:null}));
+                        }}
+                        style={{...S.numInp,width:70}}
+                      />
+                    </span>
+                  ) : (
+                    <span style={{fontSize:11,color:"#5a8a5a",display:"flex",alignItems:"center",gap:4}}>
+                      Avail: <strong style={{color:"#d4e8c2"}}>{fmt(avail)}</strong>
+                      <button
+                        onClick={()=>setSpawnGuide(p=>({...p,_editAvail:e.id}))}
+                        title="Correct actual quantity"
+                        style={{background:"transparent",border:"1px solid #3a5a3a",borderRadius:3,color:"#5a8a5a",cursor:"pointer",fontSize:9,padding:"1px 4px",lineHeight:1}}>✏️</button>
+                    </span>
+                  )}
                   <input
                     type="number"
                     min="0"
@@ -2675,8 +2704,45 @@ function App() {
             })}
           </div>
           {allEntries.length > visibleCount && (
-            <button onClick={revealNext} style={{...S.btn("#2a2a2a"),border:"1px solid #a78bda",marginTop:-4,marginBottom:12,width:"100%"}}>
+            <button onClick={revealNext} style={{...S.btn("#2a2a2a"),border:"1px solid #a78bda",marginBottom:6,width:"100%"}}>
               Reveal next batch
+            </button>
+          )}
+
+          {/* Add a missing spawn bag batch */}
+          {spawnGuide._addingBatch ? (
+            <div style={{background:"#0a1a0a",border:"1px solid #e8a87c",borderRadius:8,padding:"8px 10px",marginBottom:8}}>
+              <p style={{margin:"0 0 6px",fontSize:11,color:"#e8a87c",fontWeight:"bold"}}>➕ Add missing batch</p>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <span style={{fontSize:11,color:"#5a8a5a"}}>Date:</span>
+                <input type="date" value={spawnGuide._newBatchDate||todayStr()}
+                  onChange={ev=>setSpawnGuide(p=>({...p,_newBatchDate:ev.target.value}))}
+                  style={{...S.numInp,width:130,fontSize:11}}/>
+                <span style={{fontSize:11,color:"#5a8a5a"}}>Bags:</span>
+                <input type="number" min="0" step="0.25" value={spawnGuide._newBatchQty||""}
+                  placeholder="qty"
+                  onChange={ev=>setSpawnGuide(p=>({...p,_newBatchQty:ev.target.value}))}
+                  style={{...S.numInp,width:70}}/>
+                <button onClick={()=>{
+                  const qty = r2(parseFloat(spawnGuide._newBatchQty)||0);
+                  if(!qty){ setSpawnGuide(p=>({...p,_addingBatch:false,_newBatchDate:null,_newBatchQty:""})); return; }
+                  const newId = Date.now();
+                  setTracker(prev=>[...prev,{id:newId,type:"spawn",speciesId:spawnGuide.speciesId,date:spawnGuide._newBatchDate||todayStr(),qty,note:"Added via inoculation log"}]);
+                  setSpawnGuide(p=>({
+                    ...p,
+                    _addingBatch:false,_newBatchDate:null,_newBatchQty:"",
+                    visibleCount:(p.visibleCount||0)+1,
+                    inputs:{...(p.inputs||{}),[newId]:r2(Math.min(qty, Math.max(0,(parseFloat(p.blocks)||0)/getSpawnBagBlocks(sp) - selectedBags)))}
+                  }));
+                }} style={{...S.btn("#3a7a3a"),fontSize:11}}>Add</button>
+                <button onClick={()=>setSpawnGuide(p=>({...p,_addingBatch:false,_newBatchDate:null,_newBatchQty:""}))}
+                  style={{...S.btn("#3a2a2a"),fontSize:11}}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={()=>setSpawnGuide(p=>({...p,_addingBatch:true,_newBatchDate:todayStr(),_newBatchQty:""}))}
+              style={{...S.btn("#1a2e1a"),border:"1px dashed #e8a87c",width:"100%",marginBottom:8,fontSize:11,color:"#e8a87c"}}>
+              ➕ Bag not listed? Add it here
             </button>
           )}
 
@@ -2805,15 +2871,44 @@ function App() {
             </span>
           </div>
 
-          <div style={{maxHeight:320,overflowY:"auto",border:"1px solid #1a2e1a",borderRadius:8,padding:"8px 10px",marginBottom:12}}>
+          <div style={{maxHeight:320,overflowY:"auto",border:"1px solid #1a2e1a",borderRadius:8,padding:"8px 10px",marginBottom:8}}>
             {shownEntries.length===0 && <p style={{margin:0,fontSize:12,color:"#3a5a3a"}}>No ready block batches available.</p>}
             {shownEntries.map((e,i)=>{
               const avail = r2(parseFloat(e.qty)||0);
               const val = inputs[e.id] ?? 0;
+              const editingAvail = blockLoadGuide._editAvail===e.id;
               return(
                 <div key={e.id} style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",padding:"6px 0",borderBottom:i<shownEntries.length-1?"1px solid #111e11":"none"}}>
                   <span style={{fontSize:11,color:"#5a8a5a",minWidth:92}}>{e.date}</span>
-                  <span style={{fontSize:11,color:"#5a8a5a"}}>Avail: <strong style={{color:"#d4e8c2"}}>{fmt(avail)}</strong></span>
+                  {editingAvail ? (
+                    <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:10,color:"#f4d06f"}}>Actual qty:</span>
+                      <input
+                        type="number" min="0" step="0.5"
+                        defaultValue={avail}
+                        autoFocus
+                        onBlur={ev=>{
+                          const newQty = r2(Math.max(0, parseFloat(ev.target.value)||0));
+                          setTracker(prev=>prev.map(t=>t.id===e.id?{...t,qty:newQty}:t));
+                          const clampedVal = r2(Math.min(newQty, parseFloat(inputs[e.id])||0));
+                          setBlockLoadGuide(p=>({...p, _editAvail:null, inputs:{...(p.inputs||{}), [e.id]:clampedVal}}));
+                        }}
+                        onKeyDown={ev=>{
+                          if(ev.key==="Enter") ev.target.blur();
+                          if(ev.key==="Escape") setBlockLoadGuide(p=>({...p,_editAvail:null}));
+                        }}
+                        style={{...S.numInp,width:70}}
+                      />
+                    </span>
+                  ) : (
+                    <span style={{fontSize:11,color:"#5a8a5a",display:"flex",alignItems:"center",gap:4}}>
+                      Avail: <strong style={{color:"#d4e8c2"}}>{fmt(avail)}</strong>
+                      <button
+                        onClick={()=>setBlockLoadGuide(p=>({...p,_editAvail:e.id}))}
+                        title="Correct actual quantity"
+                        style={{background:"transparent",border:"1px solid #3a5a3a",borderRadius:3,color:"#5a8a5a",cursor:"pointer",fontSize:9,padding:"1px 4px",lineHeight:1}}>✏️</button>
+                    </span>
+                  )}
                   {e._age < incubDays && <span style={{fontSize:10,color:"#a78bda"}}>({e._age}d incub)</span>}
                   <input
                     type="number"
@@ -2832,8 +2927,48 @@ function App() {
             })}
           </div>
           {unreadyEntries.length > revealedUnready && (
-            <button onClick={revealNext} style={{...S.btn("#2a2a2a"),border:"1px solid #a78bda",marginTop:-4,marginBottom:12,width:"100%"}}>
+            <button onClick={revealNext} style={{...S.btn("#2a2a2a"),border:"1px solid #a78bda",marginBottom:6,width:"100%"}}>
               Reveal next batch
+            </button>
+          )}
+
+          {/* Add a missing block batch */}
+          {blockLoadGuide._addingBatch ? (
+            <div style={{background:"#0a1a0a",border:"1px solid #7ec8a0",borderRadius:8,padding:"8px 10px",marginBottom:8}}>
+              <p style={{margin:"0 0 6px",fontSize:11,color:"#7ec8a0",fontWeight:"bold"}}>➕ Add missing block batch</p>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <span style={{fontSize:11,color:"#5a8a5a"}}>Inoc date:</span>
+                <input type="date" value={blockLoadGuide._newBatchDate||todayStr()}
+                  onChange={ev=>setBlockLoadGuide(p=>({...p,_newBatchDate:ev.target.value}))}
+                  style={{...S.numInp,width:130,fontSize:11}}/>
+                <span style={{fontSize:11,color:"#5a8a5a"}}>Blocks:</span>
+                <input type="number" min="0" step="0.5" value={blockLoadGuide._newBatchQty||""}
+                  placeholder="qty"
+                  onChange={ev=>setBlockLoadGuide(p=>({...p,_newBatchQty:ev.target.value}))}
+                  style={{...S.numInp,width:70}}/>
+                <button onClick={()=>{
+                  const qty = r2(parseFloat(blockLoadGuide._newBatchQty)||0);
+                  if(!qty){ setBlockLoadGuide(p=>({...p,_addingBatch:false,_newBatchDate:null,_newBatchQty:""})); return; }
+                  const newId = Date.now();
+                  const inocDate = blockLoadGuide._newBatchDate||todayStr();
+                  setTracker(prev=>[...prev,{id:newId,type:"block",speciesId:blockLoadGuide.speciesId,date:inocDate,qty,note:"Added via fruiting room log"}]);
+                  const inocD = new Date(inocDate+'T12:00:00'); inocD.setHours(0,0,0,0);
+                  const age = Math.floor((today - inocD)/86400000);
+                  setBlockLoadGuide(p=>({
+                    ...p,
+                    _addingBatch:false,_newBatchDate:null,_newBatchQty:"",
+                    inputs:{...(p.inputs||{}),[newId]:r2(Math.min(qty, Math.max(0,(parseFloat(p.qty)||0) - selected)))}
+                  }));
+                }} style={{...S.btn("#3a7a3a"),fontSize:11}}>Add</button>
+                <button onClick={()=>setBlockLoadGuide(p=>({...p,_addingBatch:false,_newBatchDate:null,_newBatchQty:""}))}
+                  style={{...S.btn("#3a2a2a"),fontSize:11}}>Cancel</button>
+              </div>
+              <p style={{margin:"6px 0 0",fontSize:10,color:"#5a8a5a"}}>This will add the batch to your inventory and make it available to load.</p>
+            </div>
+          ) : (
+            <button onClick={()=>setBlockLoadGuide(p=>({...p,_addingBatch:true,_newBatchDate:todayStr(),_newBatchQty:""}))}
+              style={{...S.btn("#1a2e1a"),border:"1px dashed #7ec8a0",width:"100%",marginBottom:8,fontSize:11,color:"#7ec8a0"}}>
+              ➕ Batch not listed? Add it here
             </button>
           )}
 
